@@ -39,6 +39,15 @@ else
     echo "Port ${ADMIN_PORT}" >> /etc/ssh/sshd_config
 fi
 
+# Configure Keep-Alive so inactive SSH connections never drop or time out
+echo "[*] Configuring persistent SSH keep-alive (2-hour inactivity tolerance)..."
+sed -i '/^#\?ClientAliveInterval/d' /etc/ssh/sshd_config
+sed -i '/^#\?ClientAliveCountMax/d' /etc/ssh/sshd_config
+sed -i '/^#\?TCPKeepAlive/d' /etc/ssh/sshd_config
+echo "ClientAliveInterval 60" >> /etc/ssh/sshd_config
+echo "ClientAliveCountMax 120" >> /etc/ssh/sshd_config
+echo "TCPKeepAlive yes" >> /etc/ssh/sshd_config
+
 # Handle Ubuntu 22.10+ and 24.04 systemd socket activation for ssh
 if systemctl is-active --quiet ssh.socket; then
     echo "[*] Adjusting systemd ssh.socket port..."
