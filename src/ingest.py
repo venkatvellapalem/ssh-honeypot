@@ -17,6 +17,7 @@ from src.db import (
     record_auth_attempt,
     record_command,
     record_download,
+    record_raw_log,
     upsert_session,
 )
 from src.enrichment import ThreatEnricher
@@ -47,12 +48,18 @@ class LogIngestionDaemon:
         except json.JSONDecodeError:
             return
 
-        event_id = event.get("eventid")
+        event_id = event.get("eventid", "unknown")
         session_id = event.get("session")
         src_ip = event.get("src_ip", "")
         timestamp = event.get("timestamp", datetime.utcnow().isoformat())
 
-        if not session_id or not src_ip:
+        if not session_id:
+            return
+
+        # Store pristine raw event JSON for student forensic analysis
+        record_raw_log(self.db_path, session_id, timestamp, event_id, line.strip())
+
+        if not src_ip:
             return
 
         # 1. Connection established

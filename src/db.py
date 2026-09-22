@@ -100,11 +100,23 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
         )
     """)
 
+    # 6. Raw Event Telemetry Logs (Forensic Audit Trail)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raw_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            timestamp TIMESTAMP NOT NULL,
+            event_id TEXT NOT NULL,
+            raw_json TEXT NOT NULL
+        )
+    """)
+
     # Indexes for fast querying in SOC dashboard
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_ip ON sessions(ip);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_ip ON auth_attempts(ip);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_session ON commands(session_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_session ON auth_attempts(session_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_session ON raw_logs(session_id);")
 
     conn.commit()
     conn.close()
@@ -187,6 +199,33 @@ def record_download(db_path: str, session_id: str, ip: str, timestamp: str,
     """, (session_id, timestamp, ip, url, sha256))
     conn.commit()
     conn.close()
+
+
+def record_raw_log(db_path: str, session_id: str, timestamp: str, event_id: str, raw_json: str) -> None:
+    """Stores exact unparsed raw JSON telemetry for forensic investigation."""
+    conn = get_db_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO raw_logs (session_id, timestamp, event_id, raw_json)
+        VALUES (?, ?, ?, ?)
+    """, (session_id, timestamp, event_id, raw_json))
+    conn.commit()
+    conn.close()
+
+
+def get_raw_logs_for_session(db_path: str, session_id: str) -> List[Dict[str, Any]]:
+    """Retrieves all raw JSON lines for a specific session in chronological order."""
+    conn = get_db_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT timestamp, event_id, raw_json
+        FROM raw_logs
+        WHERE session_id = ?
+        ORDER BY id ASC
+    """, (session_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_cached_ip(db_path: str, ip: str) -> Optional[Dict[str, Any]]:
