@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: cowrie-honeypot
+    restart: unless-stopped
+    ports:
+      # Exposes Cowrie honeypot directly on host port 22
+      - "22:2222"
+    volumes:
+      - ./config/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./config/userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+      - cowrie-var:/cowrie/cowrie-git/var
+    networks:
+      - honeypot-net
+
+  soc-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.soc
+    container_name: soc-dashboard
+    restart: unless-stopped
+    ports:
+      # Exposes Streamlit Web SOC Dashboard on host port 8501
+      - "8501:8501"
+    volumes:
+      - cowrie-var:/cowrie/var:ro
+      - ./data:/app/data
+    environment:
+      - COWRIE_JSON_PATH=/cowrie/var/log/cowrie/cowrie.json
+      - DATABASE_PATH=/app/data/honeypot.db
+      - ABUSEIPDB_API_KEY=your_abuseipdb_api_key_here
+      - GEOIP_CACHE_TTL_HOURS=24
+    depends_on:
+      - cowrie
+    networks:
+      - honeypot-net
+
+volumes:
+  cowrie-var:
+
+networks:
+  honeypot-net:
+    driver: bridge

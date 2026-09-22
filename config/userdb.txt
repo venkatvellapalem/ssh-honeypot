@@ -1,0 +1,27 @@
+# ==============================================================================
+# Cowrie User Database - Honey Credentials for Threat Intelligence Capture
+# Format: <username>:<uid>:<password>
+# Use '*' to match any password for high-interaction capture, or define realistic pairs.
+# ==============================================================================
+
+root:x:root
+root:x:toor
+root:x:admin
+root:x:123456
+root:x:password
+root:x:12345678
+admin:x:admin
+admin:x:password
+admin:x:123456
+admin:x:admin123
+ubuntu:x:ubuntu
+support:x:support
+test:x:test
+user:x:user
+guest:x:guest
+cisco:x:cisco
+pi:x:raspberry
+postgres:x:postgres
+oracle:x:oracle
+deploy:x:deploy
+service:x:service

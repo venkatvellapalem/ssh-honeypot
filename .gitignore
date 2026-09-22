@@ -1,0 +1,43 @@
+# Sensitive keys and credentials
+*.pem
+*.key
+*.id_rsa
+*.pub
+.env
+.env.local
+
+# Sensitive or binary documentation
+*.pdf
+Lab04_SSH_Honeypot_Threat_Intelligence.pdf
+
+# Python & environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+cowrie-env/
+
+# Data & SQLite databases
+data/*.db
+data/*.sqlite*
+data/*.csv
+*.db
+*.sqlite3
+
+# Cowrie logs & state
+var/
+log/
+downloads/
+tty/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
