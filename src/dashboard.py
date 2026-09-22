@@ -1,7 +1,7 @@
 """
 Enterprise SSH Honeypot SOC & Threat Intelligence Center.
-Clean light-themed UI designed for student learning, forensic analysis,
-keystroke-by-keystroke telemetry, and raw log inspection.
+Dark/Black theme designed for cybersecurity operations, student learning,
+forensic analysis, keystroke-by-keystroke telemetry, and raw log inspection.
 """
 
 import json
@@ -23,51 +23,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean, modern enterprise WHITE theme CSS
+# Dark / Black SOC Theme CSS
 st.markdown("""
 <style>
-    /* Main container background */
+    /* Dark app background */
     .stApp {
-        background-color: #f8fafc;
-        color: #0f172a;
+        background-color: #0b0f19;
+        color: #e2e8f0;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
 
     /* Metric cards */
     .soc-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
+        background-color: #161f30;
+        border: 1px solid #243048;
         border-radius: 8px;
         padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
         margin-bottom: 12px;
     }
     .soc-card-title {
         font-size: 13px;
         font-weight: 600;
         text-transform: uppercase;
-        color: #64748b;
+        color: #94a3b8;
         letter-spacing: 0.05em;
         margin-bottom: 4px;
     }
     .soc-card-value {
         font-size: 26px;
         font-weight: 700;
-        color: #0f172a;
+        color: #38bdf8;
     }
     .soc-card-sub {
         font-size: 12px;
-        color: #94a3b8;
+        color: #64748b;
         margin-top: 4px;
     }
 
     /* Forensic path info banner */
     .path-banner {
-        background-color: #ffffff;
-        border-left: 4px solid #2563eb;
-        border-top: 1px solid #e2e8f0;
-        border-right: 1px solid #e2e8f0;
-        border-bottom: 1px solid #e2e8f0;
+        background-color: #131b2e;
+        border-left: 4px solid #38bdf8;
+        border-top: 1px solid #243048;
+        border-right: 1px solid #243048;
+        border-bottom: 1px solid #243048;
         border-radius: 6px;
         padding: 14px 18px;
         margin-bottom: 20px;
@@ -75,13 +75,13 @@ st.markdown("""
 
     /* Raw code log box */
     .raw-log-box {
-        background-color: #f1f5f9;
-        border: 1px solid #cbd5e1;
+        background-color: #0f172a;
+        border: 1px solid #334155;
         border-radius: 6px;
         padding: 10px;
         font-family: "Courier New", Courier, monospace;
         font-size: 12px;
-        color: #1e293b;
+        color: #38bdf8;
         overflow-x: auto;
     }
 </style>
@@ -96,7 +96,7 @@ def get_connection():
 
 # Sidebar Configuration
 st.sidebar.title("🛡️ SOC Operations")
-st.sidebar.caption("Educational SSH Honeypot & Forensics")
+st.sidebar.caption("Enterprise Honeypot & Forensics")
 
 auto_refresh = st.sidebar.checkbox("Auto-refresh (every 10s)", value=False)
 st.sidebar.markdown("---")
@@ -126,8 +126,8 @@ st.caption("Live attacker capture, telemetry ingestion, MITRE ATT&CK mapping, an
 
 st.markdown("""
 <div class="path-banner">
-    <strong style="color: #1e40af;">📁 Forensic Evidence Storage Paths on Server (AWS EC2):</strong><br>
-    <div style="font-size: 13px; color: #334155; margin-top: 6px; line-height: 1.6;">
+    <strong style="color: #38bdf8;">📁 Forensic Evidence Storage Paths on Server (AWS EC2):</strong><br>
+    <div style="font-size: 13px; color: #cbd5e1; margin-top: 6px; line-height: 1.6;">
         • <strong>Raw JSON Event Stream:</strong> <code>/home/ubuntu/ssh-honeypot/var/log/cowrie/cowrie.json</code> (Container: <code>/cowrie/var/log/cowrie/cowrie.json</code>)<br>
         • <strong>Interactive Keystroke TTY Playback:</strong> <code>/home/ubuntu/ssh-honeypot/var/lib/cowrie/tty/</code> (Play with: <code>bin/playlog &lt;file.log&gt;</code>)<br>
         • <strong>Captured Malware Droppers:</strong> <code>/home/ubuntu/ssh-honeypot/var/lib/cowrie/downloads/</code> (SHA-256 indexed payloads)<br>
@@ -158,9 +158,9 @@ with kpi2:
 with kpi3:
     st.markdown(f'<div class="soc-card"><div class="soc-card-title">Brute-Force</div><div class="soc-card-value">{total_auth:,}</div><div class="soc-card-sub">Password trials</div></div>', unsafe_allow_html=True)
 with kpi4:
-    st.markdown(f'<div class="soc-card"><div class="soc-card-title">Breached Shells</div><div class="soc-card-value" style="color: #e11d48;">{success_auth:,}</div><div class="soc-card-sub">Fake shell access</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="soc-card"><div class="soc-card-title">Breached Shells</div><div class="soc-card-value" style="color: #f43f5e;">{success_auth:,}</div><div class="soc-card-sub">Fake shell access</div></div>', unsafe_allow_html=True)
 with kpi5:
-    st.markdown(f'<div class="soc-card"><div class="soc-card-title">Keystrokes</div><div class="soc-card-value" style="color: #2563eb;">{total_cmds:,}</div><div class="soc-card-sub">Commands captured</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="soc-card"><div class="soc-card-title">Keystrokes</div><div class="soc-card-value" style="color: #38bdf8;">{total_cmds:,}</div><div class="soc-card-sub">Commands captured</div></div>', unsafe_allow_html=True)
 with kpi6:
     st.markdown(f'<div class="soc-card"><div class="soc-card-title">Countries</div><div class="soc-card-value">{total_countries:,}</div><div class="soc-card-sub">Geolocations</div></div>', unsafe_allow_html=True)
 
@@ -200,10 +200,10 @@ with col_map:
             range_color=[0, 100],
             projection="natural earth",
             hover_data={"country": True, "city": True, "asn": True, "abuse_score": True, "attack_count": True},
-            template="plotly_white"
+            template="plotly_dark"
         )
-        fig_map.update_geos(showcountries=True, countrycolor="#cbd5e1", showocean=True, oceancolor="#f1f5f9", bgcolor="#ffffff")
-        fig_map.update_layout(margin={"r": 0, "t": 20, "l": 0, "b": 0}, height=380)
+        fig_map.update_geos(showcountries=True, countrycolor="#334155", showocean=True, oceancolor="#0f172a", bgcolor="#0b0f19")
+        fig_map.update_layout(margin={"r": 0, "t": 20, "l": 0, "b": 0}, height=380, paper_bgcolor="#0b0f19")
         st.plotly_chart(fig_map, use_container_width=True)
     else:
         st.info("Waiting for geolocation coordinates...")
@@ -226,9 +226,9 @@ with col_country:
             title="Top Attacker Nations",
             color="sessions",
             color_continuous_scale="Blues",
-            template="plotly_white"
+            template="plotly_dark"
         )
-        fig_country.update_layout(yaxis={'categoryorder': 'total ascending'}, height=380, showlegend=False, margin={"t": 35, "b": 0})
+        fig_country.update_layout(yaxis={'categoryorder': 'total ascending'}, height=380, showlegend=False, margin={"t": 35, "b": 0}, paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19")
         st.plotly_chart(fig_country, use_container_width=True)
     else:
         st.caption("No country statistics yet.")
@@ -251,8 +251,8 @@ with c_user:
     """, conn)
     if not user_df.empty:
         fig_user = px.bar(user_df, x="username", y="count", title="Top Targeted Usernames", color="count",
-                          color_continuous_scale="Tealgrn", template="plotly_white")
-        fig_user.update_layout(height=280, showlegend=False, margin={"t": 30, "b": 0})
+                          color_continuous_scale="Tealgrn", template="plotly_dark")
+        fig_user.update_layout(height=280, showlegend=False, margin={"t": 30, "b": 0}, paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19")
         st.plotly_chart(fig_user, use_container_width=True)
     else:
         st.caption("Waiting for auth data...")
@@ -268,8 +268,8 @@ with c_pass:
     """, conn)
     if not pass_df.empty:
         fig_pass = px.bar(pass_df, x="password", y="count", title="Top Attempted Passwords", color="count",
-                          color_continuous_scale="Purp", template="plotly_white")
-        fig_pass.update_layout(height=280, showlegend=False, margin={"t": 30, "b": 0})
+                          color_continuous_scale="Purp", template="plotly_dark")
+        fig_pass.update_layout(height=280, showlegend=False, margin={"t": 30, "b": 0}, paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19")
         st.plotly_chart(fig_pass, use_container_width=True)
     else:
         st.caption("Waiting for password data...")
@@ -283,8 +283,8 @@ with c_pie:
     if not ratio_df.empty:
         fig_ratio = px.pie(ratio_df, names="status", values="count", title="Login Ratios",
                            color="status", color_discrete_map={"FAILED": "#ef4444", "SUCCESS": "#10b981"},
-                           hole=0.45, template="plotly_white")
-        fig_ratio.update_layout(height=280, margin={"t": 30, "b": 0})
+                           hole=0.45, template="plotly_dark")
+        fig_ratio.update_layout(height=280, margin={"t": 30, "b": 0}, paper_bgcolor="#0b0f19")
         st.plotly_chart(fig_ratio, use_container_width=True)
     else:
         st.caption("No auth ratios.")
@@ -314,9 +314,9 @@ with m_col1:
             color_continuous_scale="Oranges",
             title="Classified MITRE ATT&CK Techniques",
             hover_data={"mitre_id": True},
-            template="plotly_white"
+            template="plotly_dark"
         )
-        fig_m.update_layout(yaxis={'categoryorder': 'total ascending'}, height=360, showlegend=False, margin={"t": 30, "b": 0})
+        fig_m.update_layout(yaxis={'categoryorder': 'total ascending'}, height=360, showlegend=False, margin={"t": 30, "b": 0}, paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19")
         st.plotly_chart(fig_m, use_container_width=True)
     else:
         st.info("No commands mapped to MITRE yet.")
@@ -387,7 +387,7 @@ if not session_list.empty:
             raw_logs = pd.read_sql_query("""
                 SELECT timestamp, event_id, raw_json
                 FROM raw_logs
-                WHERE session_id = ?
+                WHERE session_id = ? 
                 ORDER BY id ASC
             """, conn, params=(selected_session,))
 
