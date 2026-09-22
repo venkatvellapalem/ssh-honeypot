@@ -2,7 +2,7 @@
 set -e
 
 echo "[*] Initializing SQLite database schema..."
-python -c "from src.db import init_db; init_db(os.getenv('DATABASE_PATH', 'data/honeypot.db'))"
+python -c "import os; from src.db import init_db; init_db(os.getenv('DATABASE_PATH', 'data/honeypot.db'))"
 
 echo "[*] Launching Real-Time Cowrie Log Ingestion Daemon in background..."
 python -m src.ingest &
