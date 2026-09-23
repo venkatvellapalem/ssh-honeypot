@@ -51,20 +51,20 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp {
-        background-color: #0b0f19;
+        background-color: #060913;
         color: #e2e8f0;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     .filter-card {
-        background-color: #161f30;
-        border: 1px solid #243048;
+        background-color: #0b1120;
+        border: 1px solid #1e293b;
         border-radius: 8px;
         padding: 16px;
         margin-bottom: 16px;
     }
     .detail-card {
-        background-color: #131b2e;
-        border: 1px solid #243048;
+        background-color: #0b1120;
+        border: 1px solid #1e293b;
         border-radius: 6px;
         padding: 12px;
     }
