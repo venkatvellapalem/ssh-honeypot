@@ -1,6 +1,5 @@
 """
 SSH Honeypot SOC Dashboard — BCSSL
-Real-time threat capture, enrichment, and MITRE ATT&CK profiling.
 """
 
 import json, os, sys, glob
@@ -23,6 +22,52 @@ from src.db import build_time_filter
 load_dotenv()
 DB_PATH = os.getenv("DATABASE_PATH", "data/honeypot.db")
 
+# ── Out-of-scope IPs (internal / company / testing — hidden from dashboard) ──
+OUT_OF_SCOPE_IPS = {
+    "124.123.14.2",   # Company network
+    "127.0.0.1",      # Loopback
+    "10.0.0.0/8",     # Internal (matched below)
+    "172.16.0.0/12",  # Docker internal
+    "192.168.0.0/16", # LAN
+}
+
+def _is_oot_of_scope(ip: str) -> bool:
+    if ip in OUT_OF_SCOPE_IPS:
+        return True
+    # Match internal ranges
+    for prefix in ["10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
+                   "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.",
+                   "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                   "192.168.", "169.254."]:
+        if ip.startswith(prefix):
+            return True
+    return False
+
+# Build SQL NOT IN clause for out-of-scope IPs
+_OOS_LIST = ", ".join(f"'{ip}'" for ip in OUT_OF_SCOPE_IPS if "/" not in ip)
+_OOS_FILTER = f"s.ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
+# For tables without s. prefix
+_OOS_FILTER_RAW = f"ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
+
+# ── MITRE ATT&CK descriptions (for teaching / learning) ─────────────────────
+MITRE_DESC = {
+    "T1105":    "T1105 — Ingress Tool Transfer (download payloads to victim)",
+    "T1496":    "T1496 — Resource Hijacking (cryptomining on compromised host)",
+    "T1082":    "T1082 — System Info Discovery (uname, cpuinfo, /etc/release)",
+    "T1033":    "T1033 — System Owner/User Discovery (whoami, id)",
+    "T1057":    "T1057 — Process Discovery (ps aux, top, pgrep)",
+    "T1016":    "T1016 — Network Config Discovery (ifconfig, ip addr, netstat)",
+    "T1083":    "T1083 — File & Directory Discovery (ls, find, cat /etc/passwd)",
+    "T1070.003":"T1070.003 — Clear Command History (history -c, unset HISTFILE)",
+    "T1562.001":"T1562.001 — Disable or Modify Tools (iptables -F, ufw disable)",
+    "T1053.003":"T1053.003 — Scheduled Task/Cron (crontab -l, systemctl enable)",
+    "T1222.002":"T1222.002 — Permissions Modification (chmod +x, chmod 777)",
+    "T1059.004":"T1059.004 — Unix Shell Execution (bash, sh, python -c)",
+    "T1078":    "T1078 — Valid Accounts (authenticated with stolen/weak creds)",
+    "T1110":    "T1110 — Brute Force (dictionary password attack)",
+}
+
+
 # ── Favicon ───────────────────────────────────────────────────────────────────
 FAVICON_PATH = None
 for candidate in [
@@ -32,11 +77,10 @@ for candidate in [
     if os.path.exists(candidate):
         FAVICON_PATH = candidate
         break
-
 try:
     from PIL import Image
     favicon_img = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
-except Exception:
+except:
     favicon_img = None
 
 st.set_page_config(page_title="SOC · SSH Honeypot", page_icon=favicon_img or ":shield:", layout="wide", initial_sidebar_state="expanded")
@@ -46,28 +90,52 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root { --bg:#050507; --surface:#0c0c10; --card:#111116; --border:#1a1a22; --text:#e4e4e7; --muted:#71717a; --accent:#06b6d4; --red:#ef4444; --green:#22c55e; --amber:#f59e0b; }
+
 .stApp, .stApp header, [data-testid="stSidebar"] { background:var(--bg)!important; font-family:'Inter',sans-serif!important; }
 .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, [data-testid="stSidebar"] .stMarkdown { color:var(--text)!important; }
 [data-testid="stSidebar"] { border-right:1px solid var(--border)!important; background:#08080b!important; }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1 { font-size:1.1rem!important; font-weight:700!important; }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 { font-size:.7rem!important; font-weight:600!important; text-transform:uppercase!important; letter-spacing:.1em!important; color:var(--muted)!important; margin-top:1.2rem!important; margin-bottom:.4rem!important; }
 h2, .stMarkdown h2 { font-size:1rem!important; font-weight:700!important; color:var(--text)!important; padding-bottom:.5rem; border-bottom:1px solid var(--border); margin-bottom:1rem!important; }
-[data-testid="stMetric"] { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:10px!important; padding:1rem 1.2rem!important; }
-[data-testid="stMetric"] label { font-size:.68rem!important; font-weight:600!important; text-transform:uppercase!important; letter-spacing:.08em!important; color:var(--muted)!important; }
-[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size:1.7rem!important; font-weight:800!important; font-family:'JetBrains Mono',monospace!important; letter-spacing:-.03em!important; }
+
+/* KPI metrics — prevent truncation */
+[data-testid="stMetric"] { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:10px!important; padding:12px 14px!important; min-width:0!important; overflow:visible!important; }
+[data-testid="stMetric"] label { font-size:.65rem!important; font-weight:600!important; text-transform:uppercase!important; letter-spacing:.08em!important; color:var(--muted)!important; white-space:nowrap!important; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size:1.5rem!important; font-weight:800!important; font-family:'JetBrains Mono',monospace!important; white-space:nowrap!important; overflow:visible!important; }
+[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size:.7rem!important; white-space:nowrap!important; }
+
+/* Tabs */
 .stTabs [data-baseweb="tab-list"] { gap:0!important; border-bottom:1px solid var(--border)!important; }
 .stTabs [data-baseweb="tab"] { font-size:.78rem!important; font-weight:500!important; padding:.55rem 1.1rem!important; color:var(--muted)!important; }
 .stTabs [aria-selected="true"] { color:var(--accent)!important; border-bottom-color:var(--accent)!important; }
+
+/* Dataframe */
 [data-testid="stDataFrame"] { border:1px solid var(--border)!important; border-radius:8px!important; }
-[data-baseweb="select"]>div, [data-baseweb="input"]>div { background:var(--surface)!important; border-color:var(--border)!important; border-radius:8px!important; }
+
+/* Selectbox & inputs — polished */
+[data-baseweb="select"]>div { background:var(--surface)!important; border-color:var(--border)!important; border-radius:8px!important; border-width:1px!important; }
+[data-baseweb="select"]:hover>div { border-color:#2a2a35!important; }
+[data-baseweb="select"] [data-baseweb="popover"] { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:8px!important; }
+[data-baseweb="select"] [role="option"] { background:var(--card)!important; color:var(--text)!important; font-size:.82rem!important; padding:8px 12px!important; }
+[data-baseweb="select"] [role="option"]:hover, [data-baseweb="select"] [aria-selected="true"] { background:#1a1a25!important; color:var(--accent)!important; }
+[data-baseweb="input"]>div { background:var(--surface)!important; border-color:var(--border)!important; border-radius:8px!important; }
+
+/* Buttons */
 .stDownloadButton button, .stLinkButton { border-radius:8px!important; font-weight:600!important; font-size:.8rem!important; }
+.stButton>button { border-radius:8px!important; font-weight:600!important; font-size:.82rem!important; background:var(--surface)!important; border:1px solid var(--border)!important; color:var(--text)!important; }
+.stButton>button:hover { border-color:var(--accent)!important; color:var(--accent)!important; }
+
 hr { border-color:var(--border)!important; margin:1.2rem 0!important; }
 details { border:1px solid var(--border)!important; border-radius:8px!important; background:var(--card)!important; }
 .stAlert { border-radius:8px!important; }
+
+/* Status pill */
 .status-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:999px; font-size:.7rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
 .status-live { background:rgba(34,197,94,.1); color:#4ade80; border:1px solid rgba(34,197,94,.2); }
 .status-live::before { content:''; width:6px; height:6px; border-radius:50%; background:#22c55e; animation:pulse 2s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* Session cards */
 .session-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; margin-bottom:16px; }
 .session-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; transition:border-color .15s; }
 .session-card:hover { border-color:#2a2a35; }
@@ -80,15 +148,22 @@ details { border:1px solid var(--border)!important; border-radius:8px!important;
 .detail-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:16px; margin-bottom:16px; }
 .detail-item .dlabel { font-size:.65rem; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:3px; }
 .detail-item .dvalue { font-size:.85rem; font-weight:600; color:var(--text); font-family:'JetBrains Mono',monospace; }
+
+/* Path cards */
 .path-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin-bottom:16px; }
 .path-card { background:var(--card); border:1px solid var(--border); border-top:2px solid var(--accent); border-radius:8px; padding:12px 14px; }
 .path-card .pt { font-size:.65rem; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:4px; }
 .path-card .pp { font-size:.78rem; font-weight:600; color:var(--accent); margin-bottom:6px; }
 .path-card .pl { font-size:.72rem; color:var(--text); font-family:'JetBrains Mono',monospace; background:var(--bg); padding:4px 6px; border-radius:4px; border:1px solid var(--border); word-break:break-all; }
-.activity-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:16px; }
+
+/* Activity cards */
+.activity-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:16px; }
 .activity-card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; text-align:center; }
-.activity-card .an { font-size:1.6rem; font-weight:800; font-family:'JetBrains Mono',monospace; }
-.activity-card .al { font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-top:2px; }
+.activity-card .an { font-size:1.5rem; font-weight:800; font-family:'JetBrains Mono',monospace; }
+.activity-card .al { font-size:.68rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-top:2px; }
+
+/* OOS badge */
+.oos-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.65rem; font-weight:600; background:rgba(245,158,11,.12); color:#f59e0b; border:1px solid rgba(245,158,11,.25); margin-left:8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,7 +173,7 @@ def clean_val(val, fallback="—"):
     if val is None: return fallback
     try:
         if pd.isna(val): return fallback
-    except Exception: pass
+    except: pass
     s = str(val).strip()
     return fallback if not s or s.lower() in ("nan","none","null","") else s
 
@@ -126,18 +201,14 @@ PL = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
 GEO = dict(showcountries=True,countrycolor="#1a1a22",showocean=True,oceancolor="#050507",
     showcoastlines=True,coastlinecolor="#1a1a22",showland=True,landcolor="#0c0c10",
     bgcolor="rgba(0,0,0,0)",projection_type="natural earth")
-
 def plot(**kw):
-    d = {**PL}
-    d.update(kw)
-    return d
-
+    d = {**PL}; d.update(kw); return d
 def yrev():
     return {**PL.get("yaxis",{}), "autorange":"reversed"}
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
-for k, v in [("drilldown_ip",None),("drilldown_user",None),("drilldown_mitre",None),("selected_session",None)]:
+for k, v in [("drilldown_ip",None),("drilldown_user",None),("drilldown_mitre",None)]:
     if k not in st.session_state: st.session_state[k] = v
 
 
@@ -145,6 +216,7 @@ for k, v in [("drilldown_ip",None),("drilldown_user",None),("drilldown_mitre",No
 conn = get_connection()
 if conn is None:
     st.warning("Database not initialized."); st.stop()
+
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 if FAVICON_PATH and os.path.exists(FAVICON_PATH):
@@ -166,16 +238,19 @@ if _d:
     if st.session_state["drilldown_user"]:  st.sidebar.badge(f"User: {st.session_state['drilldown_user']}", icon=":material/person:")
     if st.session_state["drilldown_mitre"]: st.sidebar.badge(f"MITRE: {st.session_state['drilldown_mitre']}", icon=":material/target:")
     if st.sidebar.button("Clear All", use_container_width=True):
-        for k in ["drilldown_ip","drilldown_user","drilldown_mitre"]: st.session_state[k] = None
-        st.session_state["selected_session"] = None; st.rerun()
+        for k in ["drilldown_ip","drilldown_user","drilldown_mitre"]: st.session_state[k] = None; st.rerun()
 else:
     st.sidebar.caption("None active")
+
+st.sidebar.markdown("### Out-of-Scope IPs")
+st.sidebar.markdown(f"Filtering {len([i for i in OUT_OF_SCOPE_IPS if '/' not in i])} internal/company IPs from all views.")
+st.sidebar.code("\n".join(sorted(i for i in OUT_OF_SCOPE_IPS if "/" not in i)), language=None)
 
 st.sidebar.markdown("### Endpoints")
 try:
     import urllib.request
     _ip = urllib.request.urlopen("http://169.254.169.254/latest/meta-data/public-ipv4", timeout=1).read().decode()
-except Exception:
+except:
     try: _ip = urllib.request.urlopen("https://ifconfig.me", timeout=3).read().decode().strip()
     except: _ip = "—"
 st.sidebar.code(f"Trap  {_ip}:22\nSSH   {_ip}:22222\nSOC   {_ip}:8501", language=None)
@@ -187,28 +262,30 @@ st.sidebar.markdown("- GeoIP: ip-api.com")
 st.sidebar.markdown("- Clock: IST (UTC+5:30)")
 
 
-# ── SQL filters (table-qualified to avoid ambiguity in JOINs) ─────────────────
+# ── SQL filters — always exclude out-of-scope IPs ────────────────────────────
 time_sql, time_params = build_time_filter(time_range, col_name="start_time")
 
 dw, dp = [], list(time_params)
+dw.append(_OOS_FILTER)
 if time_sql: dw.append(f"s.{time_sql}")
-if st.session_state["drilldown_ip"]:
-    dw.append("s.ip = ?"); dp.append(st.session_state["drilldown_ip"])
-cwhere = ("WHERE " + " AND ".join(dw)) if dw else ""
+if st.session_state["drilldown_ip"]: dw.append("s.ip = ?"); dp.append(st.session_state["drilldown_ip"])
+cwhere = "WHERE " + " AND ".join(dw)
 
 aw, ap = [], []
 atsql, atp = build_time_filter(time_range, col_name="timestamp")
+aw.append(_OOS_FILTER_RAW)
 if atsql: aw.append(atsql); ap.extend(atp)
 if st.session_state["drilldown_ip"]: aw.append("ip = ?"); ap.append(st.session_state["drilldown_ip"])
 if st.session_state["drilldown_user"]: aw.append("username = ?"); ap.append(st.session_state["drilldown_user"])
-aws = ("WHERE " + " AND ".join(aw)) if aw else ""
+aws = "WHERE " + " AND ".join(aw)
 
 cw, cp = [], []
 ctsql,ctp = build_time_filter(time_range, col_name="timestamp")
+cw.append(_OOS_FILTER_RAW)
 if ctsql: cw.append(ctsql); cp.extend(ctp)
 if st.session_state["drilldown_ip"]: cw.append("ip = ?"); cp.append(st.session_state["drilldown_ip"])
 if st.session_state["drilldown_mitre"]: cw.append("mitre_id = ?"); cp.append(st.session_state["drilldown_mitre"])
-cws = ("WHERE " + " AND ".join(cw)) if cw else ""
+cws = "WHERE " + " AND ".join(cw)
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -217,36 +294,35 @@ with h1: st.markdown("## SSH Honeypot SOC")
 with h2: st.markdown('<div style="text-align:right;padding-top:6px"><span class="status-pill status-live">Port 22 Active</span></div>', unsafe_allow_html=True)
 
 
-# ── KPI Row ───────────────────────────────────────────────────────────────────
+# ── KPI Row — 6 columns to prevent truncation ────────────────────────────────
 cur = conn.cursor()
 try:
     _ts = cur.execute(f"SELECT count(*) FROM sessions s {cwhere}", dp).fetchone()[0]
     _ui = cur.execute(f"SELECT count(DISTINCT s.ip) FROM sessions s {cwhere}", dp).fetchone()[0]
     _ta = cur.execute(f"SELECT count(*) FROM auth_attempts {aws}", ap).fetchone()[0]
-    _sa = cur.execute(f"SELECT count(*) FROM auth_attempts {aws} {'AND' if aws else 'WHERE'} status='SUCCESS'", ap).fetchone()[0]
+    _sa = cur.execute(f"SELECT count(*) FROM auth_attempts {aws} AND status='SUCCESS'", ap).fetchone()[0]
     _tc = cur.execute(f"SELECT count(*) FROM commands {cws}", cp).fetchone()[0]
-    _co = cur.execute(f"SELECT count(DISTINCT s.country) FROM sessions s {cwhere} {'AND' if cwhere else 'WHERE'} s.country IS NOT NULL AND s.country != '' AND s.country != 'Unknown'", dp).fetchone()[0]
-    _dl = cur.execute(f"SELECT count(*) FROM downloads").fetchone()[0]
-    _rl = cur.execute(f"SELECT count(*) FROM raw_logs").fetchone()[0]
+    _co = cur.execute(f"SELECT count(DISTINCT s.country) FROM sessions s {cwhere} AND s.country IS NOT NULL AND s.country != '' AND s.country != 'Unknown'", dp).fetchone()[0]
+    _dl = cur.execute(f"SELECT count(*) FROM downloads WHERE {_OOS_FILTER_RAW}").fetchone()[0]
+    _rl = cur.execute(f"SELECT count(*) FROM raw_logs WHERE {_OOS_FILTER_RAW}").fetchone()[0]
 except Exception as e:
     st.error(f"Query error: {e}"); st.stop()
 
-c1,c2,c3,c4,c5,c6,c7,c8 = st.columns(8)
-c1.metric("Sessions", f"{_ts:,}")
-c2.metric("IPs", f"{_ui:,}")
-c3.metric("Auth Trials", f"{_ta:,}")
-c4.metric("Breached", f"{_sa:,}")
-c5.metric("Commands", f"{_tc:,}")
-c6.metric("Countries", f"{_co:,}")
-c7.metric("Downloads", f"{_dl:,}")
-c8.metric("Raw Events", f"{_rl:,}")
+k1,k2,k3,k4,k5,k6 = st.columns(6)
+k1.metric("Sessions", f"{_ts:,}")
+k2.metric("Unique IPs", f"{_ui:,}")
+k3.metric("Auth Trials", f"{_ta:,}")
+k4.metric("Breached", f"{_sa:,}")
+k5.metric("Commands", f"{_tc:,}")
+k6.metric("Countries", f"{_co:,}")
 
 
-# ── Activity Recorded & Log Storage ───────────────────────────────────────────
+# ── Activity Recorded ─────────────────────────────────────────────────────────
 st.markdown("### Activity Recorded")
 
-_act_types = pd.read_sql_query("""
+_act_types = pd.read_sql_query(f"""
     SELECT event_category as cat, count(*) as n FROM raw_logs
+    WHERE {_OOS_FILTER_RAW}
     GROUP BY event_category ORDER BY n DESC
 """, conn)
 
@@ -256,40 +332,22 @@ for _, r in _act_types.iterrows():
 _act_html += '</div>'
 st.markdown(_act_html, unsafe_allow_html=True)
 
+
+# ── Log Storage Paths ─────────────────────────────────────────────────────────
 st.markdown("### Log Storage Paths")
-
-# Detect actual paths from env or container defaults
 _cowrie_log = os.getenv("COWRIE_JSON_PATH", "/cowrie/var/log/cowrie/cowrie.json")
-_tty_dir = os.getenv("TTY_LOG_PATH", "/opt/cowrie/cowrie-git/var/lib/cowrie/tty")
-_dl_dir = os.getenv("DOWNLOAD_PATH", "/opt/cowrie/cowrie-git/var/lib/cowrie/downloads")
+_tty_dir = "/opt/cowrie/cowrie-git/var/lib/cowrie/tty"
+_dl_dir = "/opt/cowrie/cowrie-git/var/lib/cowrie/downloads"
 _db_path = os.getenv("DATABASE_PATH", "/app/data/honeypot.db")
-
-# Count TTY files
 _tty_count = len(glob.glob(os.path.join(_tty_dir, "*.log"))) if os.path.isdir(_tty_dir) else 0
 _dl_count = len(glob.glob(os.path.join(_dl_dir, "*"))) if os.path.isdir(_dl_dir) else 0
 
 st.markdown(f"""
 <div class="path-grid">
-    <div class="path-card">
-        <div class="pt">Event Stream</div>
-        <div class="pp">Cowrie JSON Log</div>
-        <div class="pl">{_cowrie_log}</div>
-    </div>
-    <div class="path-card">
-        <div class="pt">Keystroke Recordings</div>
-        <div class="pp">TTY Session Files ({_tty_count} recordings)</div>
-        <div class="pl">{_tty_dir}/*.log</div>
-    </div>
-    <div class="path-card">
-        <div class="pt">Captured Payloads</div>
-        <div class="pp">Malware Downloads ({_dl_count} files)</div>
-        <div class="pl">{_dl_dir}/</div>
-    </div>
-    <div class="path-card">
-        <div class="pt">SOC Database</div>
-        <div class="pp">SQLite Analytical Store</div>
-        <div class="pl">{_db_path}</div>
-    </div>
+    <div class="path-card"><div class="pt">Event Stream</div><div class="pp">Cowrie JSON Log</div><div class="pl">{_cowrie_log}</div></div>
+    <div class="path-card"><div class="pt">Keystroke Recordings</div><div class="pp">TTY Session Files ({_tty_count})</div><div class="pl">{_tty_dir}/*.log</div></div>
+    <div class="path-card"><div class="pt">Captured Payloads</div><div class="pp">Malware Downloads ({_dl_count})</div><div class="pl">{_dl_dir}/</div></div>
+    <div class="path-card"><div class="pt">SOC Database</div><div class="pp">SQLite Analytical Store</div><div class="pl">{_db_path}</div></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -313,9 +371,9 @@ session_list = pd.read_sql_query(f"""
 """, conn, params=dp)
 
 if session_list.empty:
-    st.info("No sessions in this window.")
+    st.info("No external sessions in this window.")
 else:
-    # Card grid — sorted by most active
+    # Card grid
     cards = '<div class="session-grid">'
     for _, r in session_list.head(12).iterrows():
         abuse = int(r["abuse_score"] or 0)
@@ -338,10 +396,13 @@ else:
     cards += '</div>'
     st.markdown(cards, unsafe_allow_html=True)
 
-    # Select for detail
-    sel = st.selectbox("Inspect session", session_list["session_id"].tolist(),
+    # Session selector with placeholder
+    sel = st.selectbox(
+        "Select a session to inspect",
+        session_list["session_id"].tolist(),
         format_func=lambda sid: f"{session_list[session_list['session_id']==sid].iloc[0]['ip']}  ·  {session_list[session_list['session_id']==sid].iloc[0]['start_time_ist']}  ·  {int(session_list[session_list['session_id']==sid].iloc[0]['total_attempts'])+int(session_list[session_list['session_id']==sid].iloc[0]['total_commands'])} events",
-        label_visibility="collapsed")
+        index=0, label_visibility="visible"
+    )
 
     if sel:
         m = session_list[session_list["session_id"]==sel].iloc[0]
@@ -370,7 +431,7 @@ else:
 </div>
 """, unsafe_allow_html=True)
 
-        st.link_button("Check on VirusTotal", f"https://www.virustotal.com/gui/ip-address/{m['ip']}", use_container_width=False)
+        st.link_button("Check on VirusTotal", f"https://www.virustotal.com/gui/ip-address/{m['ip']}")
 
         t1, t2, t3, t4 = st.tabs(["Commands", "Auth Events", "Full Session Timeline", "Raw JSON"])
         with t1:
@@ -390,21 +451,18 @@ else:
             if not auths.empty: st.dataframe(auths, use_container_width=True, hide_index=True)
             else: st.caption("No auth events.")
         with t3:
-            # Full session timeline — all events in chronological order
             timeline = pd.read_sql_query("""
-                SELECT timestamp_ist as "Time", event_category as "Event",
-                       summary as "Details"
+                SELECT timestamp_ist as "Time", event_category as "Event", summary as "Details"
                 FROM raw_logs WHERE session_id = ? ORDER BY id ASC
             """, conn, params=(sel,))
-            if not timeline.empty:
-                st.dataframe(timeline, use_container_width=True, hide_index=True, height=300)
-            else: st.caption("No events recorded.")
+            if not timeline.empty: st.dataframe(timeline, use_container_width=True, hide_index=True, height=300)
+            else: st.caption("No events.")
         with t4:
             raws = pd.read_sql_query("""
                 SELECT id, timestamp_ist as time, event_category as cat, summary, raw_json
                 FROM raw_logs WHERE session_id = ? ORDER BY id ASC
             """, conn, params=(sel,))
-            if not raws.empty:
+            if raws is not None and not raws.empty:
                 for _, r in raws.iterrows():
                     with st.expander(f"{r['time']}  ·  {r['cat']}  ·  {r['summary']}"):
                         try: st.json(json.loads(r["raw_json"]))
@@ -414,7 +472,7 @@ else:
 st.divider()
 
 
-# ── Charts Row 1: Map + Country ──────────────────────────────────────────────
+# ── Map + Country ─────────────────────────────────────────────────────────────
 st.markdown("### Global Threat Map")
 
 geo_df = pd.read_sql_query(f"""
@@ -438,11 +496,10 @@ with gc1:
         fig.update_layout(**plot(height=350, coloraxis_colorbar=dict(title="Abuse %",len=.5)))
         st.plotly_chart(fig, use_container_width=True)
     else: st.info("No geo data.")
-
 with gc2:
     cdf = pd.read_sql_query(f"""
         SELECT s.country, COUNT(*) as n FROM sessions s
-        {cwhere} {'AND' if cwhere else 'WHERE'} s.country IS NOT NULL AND s.country != ''
+        {cwhere} AND s.country IS NOT NULL AND s.country != ''
         GROUP BY s.country ORDER BY n DESC LIMIT 10
     """, conn, params=dp)
     if not cdf.empty:
@@ -455,14 +512,14 @@ with gc2:
 st.divider()
 
 
-# ── Charts Row 2: Auth Analysis ──────────────────────────────────────────────
+# ── Auth Analysis ─────────────────────────────────────────────────────────────
 st.markdown("### Authentication Analysis")
 
 ac1, ac2, ac3 = st.columns([1.2, 1.2, 0.8])
 with ac1:
     udf = pd.read_sql_query(f"""
         SELECT username, count(*) as n FROM auth_attempts
-        {aws} {'AND' if aws else 'WHERE'} username IS NOT NULL AND username != ''
+        {aws} AND username IS NOT NULL AND username != ''
         GROUP BY username ORDER BY n DESC LIMIT 10
     """, conn, params=ap)
     if not udf.empty:
@@ -470,16 +527,15 @@ with ac1:
             color_continuous_scale=["#0e7490","#06b6d4"], labels={"n":"","username":""})
         fig.update_layout(**plot(height=260, showlegend=False, title="Usernames"))
         st.plotly_chart(fig, use_container_width=True)
-        _ul = ["(none)"] + udf["username"].tolist()
-        _us = st.selectbox("Drill by username", _ul, key="user_dd", label_visibility="collapsed")
-        if _us != "(none)" and _us != st.session_state["drilldown_user"]:
+        _ul = ["Filter by username..."] + udf["username"].tolist()
+        _us = st.selectbox("Username filter", _ul, index=0, key="user_dd", label_visibility="collapsed")
+        if _us != "Filter by username..." and _us != st.session_state["drilldown_user"]:
             st.session_state["drilldown_user"] = _us; st.rerun()
     else: st.caption("No auth data.")
-
 with ac2:
     pdf = pd.read_sql_query(f"""
         SELECT password, count(*) as n FROM auth_attempts
-        {aws} {'AND' if aws else 'WHERE'} password IS NOT NULL AND password != ''
+        {aws} AND password IS NOT NULL AND password != ''
         GROUP BY password ORDER BY n DESC LIMIT 10
     """, conn, params=ap)
     if not pdf.empty:
@@ -488,7 +544,6 @@ with ac2:
         fig.update_layout(**plot(height=260, showlegend=False, title="Passwords"))
         st.plotly_chart(fig, use_container_width=True)
     else: st.caption("No password data.")
-
 with ac3:
     rdf = pd.read_sql_query(f"""
         SELECT status, count(*) as n FROM auth_attempts {aws} GROUP BY status
@@ -504,14 +559,14 @@ with ac3:
 st.divider()
 
 
-# ── Charts Row 3: MITRE + Malicious Score ────────────────────────────────────
-st.markdown("### MITRE ATT&CK & Threat Scoring")
+# ── MITRE ATT&CK ─────────────────────────────────────────────────────────────
+st.markdown("### MITRE ATT&CK")
 
 mc1, mc2 = st.columns([1.3, 1])
 with mc1:
     mitre_df = pd.read_sql_query(f"""
         SELECT mitre_technique, mitre_id, mitre_tactic, count(*) as n FROM commands
-        {cws} {'AND' if cws else 'WHERE'} mitre_id IS NOT NULL
+        {cws} AND mitre_id IS NOT NULL
         GROUP BY mitre_id ORDER BY n DESC
     """, conn, params=cp)
     if not mitre_df.empty:
@@ -520,17 +575,20 @@ with mc1:
             hover_data=["mitre_id","mitre_tactic"], labels={"n":"","mitre_technique":""})
         fig.update_layout(**plot(height=320, showlegend=False, yaxis=yrev()))
         st.plotly_chart(fig, use_container_width=True)
-        _ml = ["(none)"] + mitre_df["mitre_id"].tolist()
-        _ms = st.selectbox("Drill by MITRE", _ml, key="mitre_dd", label_visibility="collapsed")
-        if _ms != "(none)" and _ms != st.session_state["drilldown_mitre"]:
-            st.session_state["drilldown_mitre"] = _ms; st.rerun()
+        # MITRE dropdown with ID + description
+        _ml = ["Filter by MITRE technique..."] + [
+            f"{r['mitre_id']}  —  {r['mitre_technique']}" for _, r in mitre_df.iterrows()
+        ]
+        _ms = st.selectbox("MITRE filter", _ml, index=0, key="mitre_dd", label_visibility="collapsed")
+        if _ms != "Filter by MITRE technique...":
+            _mid = _ms.split("  —  ")[0].strip()
+            if _mid != st.session_state["drilldown_mitre"]:
+                st.session_state["drilldown_mitre"] = _mid; st.rerun()
     else: st.info("No MITRE data.")
-
 with mc2:
-    # Abuse score distribution
     score_df = pd.read_sql_query(f"""
         SELECT abuse_score, count(*) as n FROM sessions s
-        {cwhere} {'AND' if cwhere else 'WHERE'} abuse_score IS NOT NULL
+        {cwhere} AND abuse_score IS NOT NULL
         GROUP BY abuse_score ORDER BY abuse_score
     """, conn, params=dp)
     if not score_df.empty:
@@ -546,16 +604,14 @@ with mc2:
 st.divider()
 
 
-# ── Charts Row 4: Activity Timeline + Country Threat Table ───────────────────
+# ── Activity Timeline + Country Intel ─────────────────────────────────────────
 st.markdown("### Activity & Country Intelligence")
 
 tc1, tc2 = st.columns([1.5, 1])
 with tc1:
-    # Hourly activity timeline
     hourly = pd.read_sql_query("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) as hour, count(*) as n
-        FROM raw_logs
-        WHERE timestamp >= datetime('now', '-7 days')
+        FROM raw_logs WHERE timestamp >= datetime('now', '-7 days') AND """ + _OOS_FILTER_RAW + """
         GROUP BY hour ORDER BY hour
     """, conn)
     if not hourly.empty:
@@ -568,9 +624,7 @@ with tc1:
             yaxis=dict(gridcolor="#141418",zerolinecolor="#141418")))
         st.plotly_chart(fig, use_container_width=True)
     else: st.caption("No timeline data.")
-
 with tc2:
-    # Country threat table
     country_intel = pd.read_sql_query(f"""
         SELECT s.country as "Country",
                COUNT(DISTINCT s.ip) as "IPs",
@@ -579,7 +633,7 @@ with tc2:
                ROUND(AVG(s.abuse_score),0) as "Avg Abuse"
         FROM sessions s
         LEFT JOIN auth_attempts aa ON s.session_id = aa.session_id
-        {cwhere} {'AND' if cwhere else 'WHERE'} s.country IS NOT NULL AND s.country != ''
+        {cwhere} AND s.country IS NOT NULL AND s.country != ''
         GROUP BY s.country ORDER BY "Sessions" DESC LIMIT 10
     """, conn, params=dp)
     if not country_intel.empty:
@@ -591,7 +645,6 @@ st.divider()
 
 # ── Recent Commands ───────────────────────────────────────────────────────────
 st.markdown("### Recent Commands")
-
 rc = pd.read_sql_query(f"""
     SELECT timestamp_ist as "Time", ip as "IP",
            command_text as "Command", mitre_id as "MITRE",
@@ -607,13 +660,11 @@ st.divider()
 
 # ── Event Log ─────────────────────────────────────────────────────────────────
 st.markdown("### Event Log")
-
-raw_df = pd.read_sql_query("""
+raw_df = pd.read_sql_query(f"""
     SELECT id, timestamp_ist as "Time", event_category as "Category",
            ip as "IP", summary as "Summary", raw_json
-    FROM raw_logs ORDER BY id DESC LIMIT 200
+    FROM raw_logs WHERE {_OOS_FILTER_RAW} ORDER BY id DESC LIMIT 200
 """, conn)
-
 if not raw_df.empty:
     st.dataframe(raw_df.drop(columns=["raw_json"]), use_container_width=True, hide_index=True, height=300)
     with st.expander("Inspect Raw JSON"):
@@ -639,11 +690,9 @@ with ex2:
     st.download_button("Commands CSV", _c.to_csv(index=False).encode(), "commands.csv", use_container_width=True)
 with ex3:
     _a = pd.read_sql_query(f"SELECT * FROM auth_attempts {aws}", conn, params=ap)
-    st.download_button("Auth CSV", _a.to_csv(index=False).encode(), "auth_attempts.csv", use_container_width=True)
+    st.download_button("Auth CSV", _a.to_csv(index=False).encode(), "auth.csv", use_container_width=True)
 
-
-# ── Footer ────────────────────────────────────────────────────────────────────
-st.caption(f"BCSSL SOC  ·  {_ts:,} sessions  ·  {_ui:,} IPs  ·  {_tc:,} commands  ·  {_dl:,} downloads  ·  {_rl:,} raw events  ·  IST {datetime.now(timezone(timedelta(hours=5,minutes=30))).strftime('%H:%M:%S')}")
+st.caption(f"BCSSL SOC  ·  {_ts:,} sessions  ·  {_ui:,} IPs  ·  {_tc:,} commands  ·  IST {datetime.now(timezone(timedelta(hours=5,minutes=30))).strftime('%H:%M:%S')}")
 
 if live_stream:
     import time; time.sleep(1.5); st.rerun()
