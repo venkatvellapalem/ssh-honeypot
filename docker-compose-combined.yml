@@ -1,0 +1,30 @@
+# Single portable container — Cowrie + SOC Dashboard in one image.
+# Use this for on-prem deployment or demo environments.
+#
+# Build:  docker compose -f docker-compose-combined.yml build
+# Run:    docker compose -f docker-compose-combined.yml up -d
+# Save:   docker save ssh-honeypot_soc-honeypot -o ssh-honeypot.tar
+# Load:   docker load -i ssh-honeypot.tar  (on air-gapped on-prem)
+
+services:
+  soc-honeypot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: soc-honeypot
+    restart: unless-stopped
+    ports:
+      - "22:22"       # Honeypot trap port
+      - "8501:8501"   # SOC Dashboard
+    volumes:
+      - cowrie-var:/opt/cowrie/cowrie-git/var
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - COWRIE_JSON_PATH=/opt/cowrie/cowrie-git/var/log/cowrie/cowrie.json
+      - DATABASE_PATH=/app/data/honeypot.db
+      - GEOIP_CACHE_TTL_HOURS=24
+
+volumes:
+  cowrie-var:

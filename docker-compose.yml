@@ -28,11 +28,11 @@ services:
     volumes:
       - cowrie-var:/cowrie/var:ro
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
       - COWRIE_JSON_PATH=/cowrie/var/log/cowrie/cowrie.json
       - DATABASE_PATH=/app/data/honeypot.db
-      - ABUSEIPDB_API_KEY=your_abuseipdb_api_key_here
-      - VIRUSTOTAL_API_KEY=your_virustotal_api_key_here
       - GEOIP_CACHE_TTL_HOURS=24
     depends_on:
       - cowrie

@@ -96,7 +96,12 @@ def map_command(command_text: str) -> Tuple[Optional[str], Optional[str], Option
         if re.search(rule["pattern"], command_text, re.IGNORECASE):
             return (rule["technique_id"], rule["technique_name"], rule["tactic"])
 
-    # Fallback for generic interactive command execution
+    # Benign commands get no MITRE mapping to keep charts clean
+    benign = {"ls", "cd", "pwd", "echo", "cat", "exit", "clear", "help", "logout", "history", "alias", "export", "set", "env", "date", "df", "du", "free", "uptime", "hostname", "tty", "true", "false", "yes", "no", "man", "which", "type", "hash", "umask", "wait", "suspend", "fg", "bg", "jobs", "disown", "trap", "kill", "signal", "exec", "source", "command", "builtin", "enable", "let", "declare", "typeset", "readonly", "local", "shift", "getopts", "read", "printf", "test", "true", "false"}
+    cmd_first = command_text.strip().split()[0] if command_text.strip() else ""
+    if cmd_first in benign:
+        return (None, None, None)
+    # Only tag as shell execution if it's explicitly a shell invocation
     return ("T1059.004", "Unix Shell Execution", "Execution")
 
 

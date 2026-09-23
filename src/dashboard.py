@@ -298,9 +298,18 @@ live_stream = st.sidebar.checkbox("Live Stream (Auto-refresh < 2s)", value=False
 st.sidebar.markdown("---")
 
 st.sidebar.subheader("Operational Endpoints")
-st.sidebar.markdown("""
-* **Honeypot Trap Port**: `18.60.33.150:22`
-* **Host Admin SSH**: `18.60.33.150:22222`
+# Detect public IP dynamically (works on EC2 and on-prem)
+try:
+    import urllib.request
+    _pub_ip = urllib.request.urlopen("http://169.254.169.254/latest/meta-data/public-ipv4", timeout=1).read().decode()
+except Exception:
+    try:
+        _pub_ip = urllib.request.urlopen("https://ifconfig.me", timeout=3).read().decode().strip()
+    except Exception:
+        _pub_ip = "<server-ip>"
+st.sidebar.markdown(f"""
+* **Honeypot Trap Port**: `{_pub_ip}:22`
+* **Host Admin SSH**: `{_pub_ip}:22222`
 * **Log Explorer**: `/logs` (Full Event Feed)
 """)
 

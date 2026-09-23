@@ -37,7 +37,9 @@ EVENT_TYPE_MAPPING = {
     "cowrie.direct-tcpip.data": "TCP Tunnel Transmission",
     "cowrie.log.closed": "TTY Playback Saved",
     "cowrie.session.params": "Session Parameters",
-    "cowrie.session.closed": "Attacker Session Terminated"
+    "cowrie.session.closed": "Attacker Session Terminated",
+    "cowrie.client.fingerprint": "SSH Client Fingerprint",
+    "cowrie.client.malformed_packet": "Malformed SSH Packet"
 }
 
 
@@ -196,6 +198,14 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         )
     """)
+
+    # Migrate downloads table if it existed before timestamp_ist was added
+    dl_cols = {col[1] for col in cur.execute("PRAGMA table_info(downloads)").fetchall()}
+    if "timestamp_ist" not in dl_cols:
+        try:
+            cur.execute("ALTER TABLE downloads ADD COLUMN timestamp_ist TEXT")
+        except Exception:
+            pass
 
     # 5. IP Threat Intelligence Cache
     cur.execute("""
@@ -495,7 +505,6 @@ def record_raw_log(db_path: str, session_id: str, timestamp: str, event_id: str,
 
 def get_cached_ip(db_path: str, ip: str) -> Optional[Dict[str, Any]]:
     """Retrieves cached threat intelligence for an IP if exists."""
-    init_db(db_path)
     conn = get_db_connection(db_path)
     cur = conn.cursor()
     cur.execute("SELECT * FROM ip_cache WHERE ip = ?", (ip,))

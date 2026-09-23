@@ -6,6 +6,7 @@ attaches Elastic IP, and monitors startup.
 """
 
 import base64
+import os
 import sys
 import time
 import boto3
@@ -18,7 +19,8 @@ SECURITY_GROUP_ID = "sg-08f4728cdaa98632a"
 SUBNET_ID = "subnet-01cecae2aa389ea2c"
 ELASTIC_IP_ALLOC_ID = "eipalloc-0318cfa28ddc5ca76"
 ELASTIC_IP = "18.60.33.150"
-ABUSEIPDB_KEY = "your_abuseipdb_api_key_here"
+# Read API key from environment — never hardcode secrets
+ABUSEIPDB_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 
 USER_DATA_SCRIPT = f"""#!/bin/bash
 set -euxo pipefail
@@ -108,7 +110,11 @@ def main():
     ]
 
     if old_instance_ids:
-        print(f"[*] Terminating old instance(s): {old_instance_ids}...")
+        print(f"[*] Found old instance(s): {old_instance_ids}")
+        confirm = input(f"    Terminate {len(old_instance_ids)} instance(s)? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print("[!] Aborted. Terminate old instances manually first.")
+            sys.exit(1)
         ec2.terminate_instances(InstanceIds=old_instance_ids)
         waiter = ec2.get_waiter("instance_terminated")
         print("[*] Waiting for old instance(s) to terminate...")

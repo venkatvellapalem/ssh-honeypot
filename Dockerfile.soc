@@ -21,6 +21,9 @@ COPY config/ ./config/
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
+# Non-root user for Streamlit
+RUN groupadd -r socuser && useradd -r -g socuser -d /app socuser
+
 EXPOSE 8501
 
 ENTRYPOINT ["./entrypoint.sh"]

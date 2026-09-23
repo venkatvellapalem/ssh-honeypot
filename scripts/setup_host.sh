@@ -113,8 +113,19 @@ echo -e "\n${YELLOW}[3/4] Preparing project directories...${NC}"
 mkdir -p data
 chown -R "$ACTUAL_USER":"$ACTUAL_USER" data config
 
-# 4. Completion
-echo -e "\n${GREEN}[4/4] Host setup complete!${NC}"
+# 4. Basic Firewall (UFW)
+echo -e "\n${YELLOW}[4/5] Configuring UFW firewall...${NC}"
+apt-get install -y ufw > /dev/null 2>&1 || true
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ${ADMIN_PORT}/tcp comment 'Admin SSH'
+ufw allow 22/tcp comment 'Cowrie Honeypot Trap'
+ufw allow 8501/tcp comment 'SOC Dashboard'
+ufw --force enable
+echo -e "${GREEN}[+] UFW enabled: ports ${ADMIN_PORT}, 22, 8501 open.${NC}"
+
+# 5. Completion
+echo -e "\n${GREEN}[5/5] Host setup complete!${NC}"
 echo -e "${BLUE}======================================================${NC}"
 echo -e "${GREEN}NEXT STEPS:${NC}"
 echo -e "1. From a new terminal, confirm connection on port 22222:"

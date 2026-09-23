@@ -157,13 +157,22 @@ class LogIngestionDaemon:
             logger.warning(f"Payload Download [{session_id}] {src_ip} -> {url} (SHA256: {sha256})")
             record_download(self.db_path, session_id, src_ip, timestamp, url, sha256)
 
-        # 10. Direct TCP/IP Tunnel Request (Proxy Attempt)
+        # 10. Client SSH Fingerprint
+        elif event_id == "cowrie.client.fingerprint":
+            fingerprint = event.get("fingerprint", "")
+            summary = f"SSH Client Fingerprint: {fingerprint}"
+
+        # 11. Malformed Packet
+        elif event_id == "cowrie.client.malformed_packet":
+            summary = f"Malformed SSH Packet from {src_ip}"
+
+        # 12. Direct TCP/IP Tunnel Request (Proxy Attempt)
         elif "direct-tcpip" in event_id:
             dst_ip = event.get("dst_ip", "")
             dst_port = event.get("dst_port", "")
             summary = f"Tunnel / Proxy Request to {dst_ip}:{dst_port}"
 
-        # 11. Session Closed
+        # 13. Session Closed
         elif event_id == "cowrie.session.closed":
             duration = float(event.get("duration", 0.0))
             summary = f"Session Terminated (Duration: {duration:.2f}s)"

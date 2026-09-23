@@ -39,7 +39,7 @@ class ThreatEnricher:
     def __init__(self, db_path: str = "data/honeypot.db", api_key: Optional[str] = None, vt_api_key: Optional[str] = None):
         self.db_path = db_path
         self.api_key = api_key or os.getenv("ABUSEIPDB_API_KEY", "")
-        self.vt_api_key = vt_api_key or os.getenv("VIRUSTOTAL_API_KEY", "your_virustotal_api_key_here")
+        self.vt_api_key = vt_api_key or os.getenv("VIRUSTOTAL_API_KEY", "")
         self.ttl_hours = int(os.getenv("GEOIP_CACHE_TTL_HOURS", "24"))
         init_db(self.db_path)
 
@@ -67,7 +67,7 @@ class ThreatEnricher:
         if cached and cached.get("cached_at"):
             try:
                 cached_time = datetime.fromisoformat(cached["cached_at"])
-                if datetime.utcnow() - cached_time < timedelta(hours=self.ttl_hours):
+                if datetime.now(timezone.utc) - cached_time < timedelta(hours=self.ttl_hours):
                     return cached
             except Exception:
                 pass
