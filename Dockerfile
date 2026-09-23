@@ -56,7 +56,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY src/ ./src/
-COPY pages/ ./pages/
+COPY pages/ ./src/pages/
 COPY assets/ ./assets/
 COPY entrypoint-combined.sh .
 RUN chmod +x entrypoint-combined.sh

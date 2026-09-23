@@ -1,27 +1,97 @@
 # ==============================================================================
-# Cowrie User Database - Honey Credentials for Threat Intelligence Capture
+# Cowrie User Database - Honey Credentials
 # Format: <username>:<uid>:<password>
-# Use '*' to match any password for high-interaction capture, or define realistic pairs.
+# Attackers who match these get a fake shell. More entries = more captures.
 # ==============================================================================
 
+# Root (most targeted)
 root:x:root
 root:x:toor
 root:x:admin
 root:x:123456
 root:x:password
 root:x:12345678
+root:x:qwerty
+root:x:letmein
+root:x:welcome
+root:x:abc123
+root:x:password1
+root:x:root123
+root:x:passw0rd
+root:x:P@ssw0rd
+root:x:Root@123
+root:x:Root@1234
+root:x:!@#$%^&*
+root:x:changeme
+root:x:default
+root:x:test
+root:x:guest
+root:x:master
+root:x:server
+root:x:system
+root:x:manager
+
+# Admin accounts
 admin:x:admin
+admin:x:admin123
 admin:x:password
 admin:x:123456
-admin:x:admin123
+admin:x:admin@123
+admin:x:Admin@123
+admin:x:admin1234
+admin:x:administrator
+
+# Ubuntu (cloud instances)
 ubuntu:x:ubuntu
+ubuntu:x:ubuntu123
+ubuntu:x:Ubuntu@123
+ubuntu:x:passw0rd
+
+# Service accounts
+oracle:x:oracle
+postgres:x:postgres
+mysql:x:mysql
+redis:x:redis
+mongodb:x:mongodb
+elastic:x:elastic
+jenkins:x:jenkins
+git:x:git
+deploy:x:deploy
+service:x:service
+www:x:www
+nginx:x:nginx
+apache:x:apache
+ftp:x:ftp
+smb:x:smb
+
+# Default IoT / device credentials
+pi:x:raspberry
+cisco:x:cisco
 support:x:support
 test:x:test
 user:x:user
 guest:x:guest
-cisco:x:cisco
-pi:x:raspberry
-postgres:x:postgres
-oracle:x:oracle
-deploy:x:deploy
-service:x:service
+default:x:default
+admin:x:5up
+admin:x:anko
+
+# Common botnet targets
+ubnt:x:ubnt
+admin:x:smcadmin
+root:x:vizxv
+root:x:xc3511
+root:x:juantech
+root:x:hi3518
+root:x:jvbzd
+root:x:ikwb
+root:x:059xkj
+root:x:Zte521
+root:x:vstarcam2015
+root:x:zlxx.
+root:x:!@#$
+root:x:S2fGqNFs
+root:x:zlxx.
+admin:x:1234
+admin:x:12345
+admin:x:pass
+admin:x:root
