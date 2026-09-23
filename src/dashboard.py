@@ -45,9 +45,10 @@ def _is_oot_of_scope(ip: str) -> bool:
 
 # Build SQL NOT IN clause for out-of-scope IPs
 _OOS_LIST = ", ".join(f"'{ip}'" for ip in OUT_OF_SCOPE_IPS if "/" not in ip)
-_OOS_FILTER = f"s.ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
-# For tables without s. prefix
-_OOS_FILTER_RAW = f"ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
+# Defaults to filtered (excludes OOS). Toggle in sidebar can include them.
+_OOS_ACTIVE = f"s.ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
+_OOS_ACTIVE_RAW = f"ip NOT IN ({_OOS_LIST})" if _OOS_LIST else "1=1"
+_OOS_FILTER_ALL = "1=1"  # no filter
 
 # ── MITRE ATT&CK descriptions (for teaching / learning) ─────────────────────
 MITRE_DESC = {
@@ -245,6 +246,18 @@ time_range = st.sidebar.selectbox("Time Range",
     ["Last 15 Minutes","Last 1 Hour","Last 4 Hours","Last 24 Hours","Last 7 Days","All Time"],
     index=5, label_visibility="collapsed")
 
+st.sidebar.markdown("### Scope")
+show_internal = st.sidebar.toggle("Show Internal IPs", value=False,
+    help="Include company/internal IPs in dashboard metrics and charts. Useful for demonstrating honeypot triggers to students.")
+
+# Set filter based on toggle
+if show_internal:
+    _OOS_ACTIVE = _OOS_FILTER_ALL
+    _OOS_ACTIVE_RAW = "1=1"
+else:
+    _OOS_ACTIVE = _OOS_ACTIVE
+    _OOS_ACTIVE_RAW = _OOS_ACTIVE_RAW
+
 st.sidebar.markdown("### Drilldown")
 _d = any([st.session_state["drilldown_ip"],st.session_state["drilldown_user"],st.session_state["drilldown_mitre"]])
 if _d:
@@ -256,9 +269,7 @@ if _d:
 else:
     st.sidebar.caption("None active")
 
-st.sidebar.markdown("### Out-of-Scope IPs")
-st.sidebar.markdown(f"Filtering {len([i for i in OUT_OF_SCOPE_IPS if '/' not in i])} internal/company IPs from all views.")
-st.sidebar.code("\n".join(sorted(i for i in OUT_OF_SCOPE_IPS if "/" not in i)), language=None)
+
 
 st.sidebar.markdown("### Endpoints")
 try:
@@ -280,14 +291,14 @@ st.sidebar.markdown("- Clock: IST (UTC+5:30)")
 time_sql, time_params = build_time_filter(time_range, col_name="start_time")
 
 dw, dp = [], list(time_params)
-dw.append(_OOS_FILTER)
+dw.append(_OOS_ACTIVE)
 if time_sql: dw.append(f"s.{time_sql}")
 if st.session_state["drilldown_ip"]: dw.append("s.ip = ?"); dp.append(st.session_state["drilldown_ip"])
 cwhere = "WHERE " + " AND ".join(dw)
 
 aw, ap = [], []
 atsql, atp = build_time_filter(time_range, col_name="timestamp")
-aw.append(_OOS_FILTER_RAW)
+aw.append(_OOS_ACTIVE_RAW)
 if atsql: aw.append(atsql); ap.extend(atp)
 if st.session_state["drilldown_ip"]: aw.append("ip = ?"); ap.append(st.session_state["drilldown_ip"])
 if st.session_state["drilldown_user"]: aw.append("username = ?"); ap.append(st.session_state["drilldown_user"])
@@ -295,7 +306,7 @@ aws = "WHERE " + " AND ".join(aw)
 
 cw, cp = [], []
 ctsql,ctp = build_time_filter(time_range, col_name="timestamp")
-cw.append(_OOS_FILTER_RAW)
+cw.append(_OOS_ACTIVE_RAW)
 if ctsql: cw.append(ctsql); cp.extend(ctp)
 if st.session_state["drilldown_ip"]: cw.append("ip = ?"); cp.append(st.session_state["drilldown_ip"])
 if st.session_state["drilldown_mitre"]: cw.append("mitre_id = ?"); cp.append(st.session_state["drilldown_mitre"])
@@ -317,8 +328,8 @@ try:
     _sa = cur.execute(f"SELECT count(*) FROM auth_attempts {aws} AND status='SUCCESS'", ap).fetchone()[0]
     _tc = cur.execute(f"SELECT count(*) FROM commands {cws}", cp).fetchone()[0]
     _co = cur.execute(f"SELECT count(DISTINCT s.country) FROM sessions s {cwhere} AND s.country IS NOT NULL AND s.country != '' AND s.country != 'Unknown'", dp).fetchone()[0]
-    _dl = cur.execute(f"SELECT count(*) FROM downloads WHERE {_OOS_FILTER_RAW}").fetchone()[0]
-    _rl = cur.execute(f"SELECT count(*) FROM raw_logs WHERE {_OOS_FILTER_RAW}").fetchone()[0]
+    _dl = cur.execute(f"SELECT count(*) FROM downloads WHERE {_OOS_ACTIVE_RAW}").fetchone()[0]
+    _rl = cur.execute(f"SELECT count(*) FROM raw_logs WHERE {_OOS_ACTIVE_RAW}").fetchone()[0]
 except Exception as e:
     st.error(f"Query error: {e}"); st.stop()
 
@@ -336,7 +347,7 @@ st.markdown("### Activity Recorded")
 
 _act_types = pd.read_sql_query(f"""
     SELECT event_category as cat, count(*) as n FROM raw_logs
-    WHERE {_OOS_FILTER_RAW}
+    WHERE {_OOS_ACTIVE_RAW}
     GROUP BY event_category ORDER BY n DESC
 """, conn)
 
@@ -625,7 +636,7 @@ tc1, tc2 = st.columns([1.5, 1])
 with tc1:
     hourly = pd.read_sql_query("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) as hour, count(*) as n
-        FROM raw_logs WHERE timestamp >= datetime('now', '-7 days') AND """ + _OOS_FILTER_RAW + """
+        FROM raw_logs WHERE timestamp >= datetime('now', '-7 days') AND """ + _OOS_ACTIVE_RAW + """
         GROUP BY hour ORDER BY hour
     """, conn)
     if not hourly.empty:
@@ -677,7 +688,7 @@ st.markdown("### Event Log")
 raw_df = pd.read_sql_query(f"""
     SELECT id, timestamp_ist as "Time", event_category as "Category",
            ip as "IP", summary as "Summary", raw_json
-    FROM raw_logs WHERE {_OOS_FILTER_RAW} ORDER BY id DESC LIMIT 200
+    FROM raw_logs WHERE {_OOS_ACTIVE_RAW} ORDER BY id DESC LIMIT 200
 """, conn)
 if not raw_df.empty:
     st.dataframe(raw_df.drop(columns=["raw_json"]), use_container_width=True, hide_index=True, height=300)
