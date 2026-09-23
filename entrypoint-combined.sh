@@ -22,7 +22,15 @@ echo "============================================="
 echo "[*] Initializing SQLite database schema..."
 python -c "import os; from src.db import init_db; init_db('${DB_PATH}')"
 
-echo "[*] Starting Cowrie SSH Honeypot on port 22 (foreground)..."
+# Patch Cowrie listen port (default 2222 -> 22 for single-container mode)
+COWRIE_PORT=${COWRIE_PORT:-22}
+COWRIE_CFG="${COWRIE_HOME}/cowrie-git/etc/cowrie.cfg"
+if [ -f "$COWRIE_CFG" ]; then
+    sed -i "s/listen_endpoints = tcp:[0-9]*/listen_endpoints = tcp:${COWRIE_PORT}/" "$COWRIE_CFG"
+    echo "[+] Cowrie configured to listen on port ${COWRIE_PORT}"
+fi
+
+echo "[*] Starting Cowrie SSH Honeypot on port ${COWRIE_PORT} (foreground)..."
 cd "${COWRIE_HOME}/cowrie-git"
 ${COWRIE_VENV}/bin/twistd -n -l ${COWRIE_HOME}/cowrie-git/var/log/cowrie/cowrie.log cowrie &
 COWRIE_PID=$!
