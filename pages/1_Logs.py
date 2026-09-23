@@ -33,9 +33,20 @@ for candidate in [
 
 try:
     from PIL import Image
-    _fi = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
-except Exception:
-    _fi = None
+    _img = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
+    if _img:
+        _fav = _img.copy()
+        _fav.thumbnail((64, 64))
+        if _fav.mode == 'RGBA':
+            _bg = Image.new('RGB', _fav.size, (5,5,7))
+            _bg.paste(_fav, mask=_fav.split()[3])
+            _fav = _bg
+        _fi = _fav
+        _si = _img
+    else:
+        _fi = None; _si = None
+except:
+    _fi = None; _si = None
 
 st.set_page_config(page_title="Event Log · SOC", page_icon=_fi or ":scroll:", layout="wide", initial_sidebar_state="expanded")
 
@@ -91,7 +102,7 @@ CATEGORIES = {
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 if FAVICON_PATH and os.path.exists(FAVICON_PATH):
-    st.sidebar.image(FAVICON_PATH, width=160)
+    st.sidebar.image(_si if _si else FAVICON_PATH, width=160)
 st.sidebar.title("SOC")
 st.sidebar.caption("Blue Cloud Softech Solutions")
 

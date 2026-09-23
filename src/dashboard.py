@@ -79,9 +79,23 @@ for candidate in [
         break
 try:
     from PIL import Image
-    favicon_img = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
+    _img = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
+    if _img:
+        # Resize for favicon and sidebar
+        _favicon = _img.copy()
+        _favicon.thumbnail((64, 64))
+        if _favicon.mode == 'RGBA':
+            _bg = Image.new('RGB', _favicon.size, (5,5,7))
+            _bg.paste(_favicon, mask=_favicon.split()[3])
+            _favicon = _bg
+        favicon_img = _favicon
+        sidebar_img = _img
+    else:
+        favicon_img = None
+        sidebar_img = None
 except:
     favicon_img = None
+    sidebar_img = None
 
 st.set_page_config(page_title="SOC · SSH Honeypot", page_icon=favicon_img or ":shield:", layout="wide", initial_sidebar_state="expanded")
 
@@ -220,7 +234,7 @@ if conn is None:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 if FAVICON_PATH and os.path.exists(FAVICON_PATH):
-    st.sidebar.image(FAVICON_PATH, width=150)
+    st.sidebar.image(sidebar_img if sidebar_img else FAVICON_PATH, width=150)
 
 st.sidebar.title("SOC")
 st.sidebar.caption("Blue Cloud Softech Solutions")
@@ -366,7 +380,7 @@ session_list = pd.read_sql_query(f"""
            COALESCE(s.total_attempts,0) as total_attempts,
            COALESCE(s.total_commands,0) as total_commands
     FROM sessions s {cwhere}
-    ORDER BY (COALESCE(s.total_attempts,0) + COALESCE(s.total_commands,0)) DESC, s.start_time DESC
+    ORDER BY COALESCE(s.abuse_score,0) DESC, (COALESCE(s.total_attempts,0) + COALESCE(s.total_commands,0)) DESC, s.start_time DESC
     LIMIT 50
 """, conn, params=dp)
 
