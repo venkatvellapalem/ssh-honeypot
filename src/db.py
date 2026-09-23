@@ -7,12 +7,91 @@ and Splunk-style time-window and entity drilldown filtering.
 """
 
 import os
+import sys
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+# Ensure project root is in sys.path
+_cur_dir = Path(__file__).resolve().parent
+_root_dir = _cur_dir.parent if _cur_dir.name in ("src", "pages") else _cur_dir
+if str(_root_dir) not in sys.path:
+    sys.path.insert(0, str(_root_dir))
+
 # Indian Standard Time (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Clean, Honeypot-Oriented Event Classification
+EVENT_TYPE_MAPPING = {
+    "cowrie.session.connect": "Inbound Connection Probe",
+    "cowrie.client.version": "SSH Client Banner Fingerprint",
+    "cowrie.client.kex": "Cryptographic Handshake / KEX",
+    "cowrie.client.size": "Terminal Window Sized",
+    "cowrie.login.failed": "Brute-Force Auth Failed",
+    "cowrie.login.success": "Honeypot Breach (Auth Success)",
+    "cowrie.command.input": "Shell Command Execution",
+    "cowrie.command.failed": "Unrecognized Shell Command",
+    "cowrie.session.file_download": "Malware Dropper Download Attempt",
+    "cowrie.direct-tcpip.request": "TCP Tunnel Proxy Request",
+    "cowrie.direct-tcpip.data": "TCP Tunnel Transmission",
+    "cowrie.log.closed": "TTY Playback Saved",
+    "cowrie.session.params": "Session Parameters",
+    "cowrie.session.closed": "Attacker Session Terminated"
+}
+
+
+def get_honeypot_event_type(event_id: str) -> str:
+    """Returns a clean, honeypot-oriented title for any Cowrie internal event_id."""
+    if event_id in EVENT_TYPE_MAPPING:
+        return EVENT_TYPE_MAPPING[event_id]
+    if "login" in event_id:
+        return "Authentication Event"
+    if "command" in event_id:
+        return "Command Event"
+    if "tcpip" in event_id:
+        return "TCP Proxy Event"
+    return event_id.replace("cowrie.", "").replace(".", " ").title()
+
+
+def generate_event_summary(event_id: str, event: dict, fallback_ip: str = "") -> str:
+    """Generates an intuitive, readable summary for any honeypot event."""
+    src_ip = event.get("src_ip") or fallback_ip or "Unknown IP"
+    if event_id == "cowrie.session.connect":
+        src_port = event.get("src_port", "")
+        return f"Inbound connection from {src_ip}:{src_port}"
+    elif event_id == "cowrie.client.version":
+        return f"SSH Client Banner: {event.get('version', '')}"
+    elif event_id == "cowrie.client.kex":
+        ciphers = ", ".join(event.get("encCS", [])[:3])
+        kex = ", ".join(event.get("kexAlgs", [])[:3])
+        return f"Handshake -> Ciphers: {ciphers} | Kex: {kex}"
+    elif event_id == "cowrie.client.size":
+        return f"Terminal Sized: {event.get('width', 80)}x{event.get('height', 24)}"
+    elif event_id == "cowrie.login.failed":
+        return f"Auth Failed: {event.get('username', '')} (password: '{event.get('password', '')}')"
+    elif event_id == "cowrie.login.success":
+        return f"Auth Succeeded: {event.get('username', '')} (password: '{event.get('password', '')}')"
+    elif event_id == "cowrie.command.input":
+        return f"Command: '{event.get('input', '')}'"
+    elif event_id == "cowrie.command.failed":
+        return f"Command Failed: '{event.get('input', '')}'"
+    elif event_id == "cowrie.session.file_download":
+        return f"Malware Dropper: {event.get('url', '')} (SHA256: {event.get('shasum', '')[:12]}...)"
+    elif "direct-tcpip" in event_id:
+        return f"Tunnel Proxy to {event.get('dst_ip', '')}:{event.get('dst_port', '')}"
+    elif event_id == "cowrie.session.closed":
+        dur = event.get("duration", 0.0)
+        try:
+            dur = float(dur)
+        except Exception:
+            dur = 0.0
+        return f"Session Terminated (Duration: {dur:.2f}s)"
+    elif event_id == "cowrie.log.closed":
+        return f"TTY Session Recording Finalized: {event.get('ttylog', '')}"
+    elif event_id == "cowrie.session.params":
+        return f"SSH Session Params: Arch={event.get('arch', 'x86')} OS={event.get('os', 'Linux')}"
+    return f"Event: {get_honeypot_event_type(event_id)}"
 
 
 def to_ist_str(utc_val: Optional[str] = None) -> str:
@@ -147,6 +226,7 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             timestamp_ist TEXT,
             ip TEXT,
             event_id TEXT NOT NULL,
+            event_category TEXT,
             summary TEXT,
             raw_json TEXT NOT NULL
         )
@@ -161,11 +241,30 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
         ("usage_type", "TEXT"),
         ("client_version", "TEXT"),
         ("ciphers", "TEXT"),
-        ("terminal_size", "TEXT")
+        ("terminal_size", "TEXT"),
+        ("vt_malicious", "INTEGER DEFAULT 0"),
+        ("vt_suspicious", "INTEGER DEFAULT 0"),
+        ("vt_reputation", "INTEGER DEFAULT 0")
     ]:
         if col_name not in existing_cols:
             try:
                 cur.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+    ip_cache_cols = {col[1] for col in cur.execute("PRAGMA table_info(ip_cache)").fetchall()}
+    for col_name, col_type in [
+        ("usage_type", "TEXT"),
+        ("domain", "TEXT"),
+        ("last_reported", "TEXT"),
+        ("vt_malicious", "INTEGER DEFAULT 0"),
+        ("vt_suspicious", "INTEGER DEFAULT 0"),
+        ("vt_reputation", "INTEGER DEFAULT 0"),
+        ("vt_total", "INTEGER DEFAULT 0")
+    ]:
+        if col_name not in ip_cache_cols:
+            try:
+                cur.execute(f"ALTER TABLE ip_cache ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass
 
@@ -184,7 +283,12 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             pass
 
     raw_cols = {col[1] for col in cur.execute("PRAGMA table_info(raw_logs)").fetchall()}
-    for col_name, col_type in [("timestamp_ist", "TEXT"), ("ip", "TEXT"), ("summary", "TEXT")]:
+    for col_name, col_type in [
+        ("timestamp_ist", "TEXT"),
+        ("ip", "TEXT"),
+        ("event_category", "TEXT"),
+        ("summary", "TEXT")
+    ]:
         if col_name not in raw_cols:
             try:
                 cur.execute(f"ALTER TABLE raw_logs ADD COLUMN {col_name} {col_type}")
@@ -203,8 +307,51 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_event ON raw_logs(event_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_time ON raw_logs(timestamp);")
 
+    # Backfill any incomplete historical rows in raw_logs
+    backfill_raw_logs(conn)
+
     conn.commit()
     conn.close()
+
+
+def backfill_raw_logs(conn: sqlite3.Connection) -> None:
+    """Backfills legacy raw_logs records with IST timestamps, IP addresses, categories, and summaries."""
+    import json
+    cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT id, session_id, event_id, raw_json 
+        FROM raw_logs 
+        WHERE timestamp_ist IS NULL OR ip IS NULL OR summary IS NULL OR event_category IS NULL
+    """).fetchall()
+
+    if not rows:
+        return
+
+    # Map session_id -> ip from sessions table
+    session_ips = dict(cur.execute("SELECT session_id, ip FROM sessions").fetchall())
+
+    updates = []
+    for row in rows:
+        r_id, sid, eid, raw_str = row[0], row[1], row[2], row[3]
+        try:
+            ev = json.loads(raw_str)
+        except Exception:
+            ev = {}
+
+        ts = ev.get("timestamp")
+        ts_ist = to_ist_str(ts)
+        ip = ev.get("src_ip") or session_ips.get(sid) or "Honeypot Internal"
+        summary = generate_event_summary(eid, ev, ip)
+        cat = get_honeypot_event_type(eid)
+        updates.append((ts_ist, ip, cat, summary, r_id))
+
+    if updates:
+        cur.executemany("""
+            UPDATE raw_logs 
+            SET timestamp_ist = ?, ip = ?, event_category = ?, summary = ? 
+            WHERE id = ?
+        """, updates)
+        conn.commit()
 
 
 def upsert_session(db_path: str, session_id: str, ip: str, timestamp: str) -> None:
@@ -337,10 +484,11 @@ def record_raw_log(db_path: str, session_id: str, timestamp: str, event_id: str,
     conn = get_db_connection(db_path)
     cur = conn.cursor()
     ist_time = to_ist_str(timestamp)
+    cat = get_honeypot_event_type(event_id)
     cur.execute("""
-        INSERT INTO raw_logs (session_id, timestamp, timestamp_ist, ip, event_id, summary, raw_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (session_id, timestamp, ist_time, ip, event_id, summary, raw_json))
+        INSERT INTO raw_logs (session_id, timestamp, timestamp_ist, ip, event_id, event_category, summary, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, ist_time, ip, event_id, cat, summary, raw_json))
     conn.commit()
     conn.close()
 
@@ -365,8 +513,9 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
     cur.execute("""
         INSERT INTO ip_cache (ip, country, country_code, city, asn, isp, latitude, longitude,
-                             abuse_score, total_reports, usage_type, domain, last_reported, cached_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             abuse_score, total_reports, usage_type, domain, last_reported,
+                             vt_malicious, vt_suspicious, vt_reputation, vt_total, cached_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ip) DO UPDATE SET
             country = excluded.country,
             country_code = excluded.country_code,
@@ -380,6 +529,10 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
             usage_type = excluded.usage_type,
             domain = excluded.domain,
             last_reported = excluded.last_reported,
+            vt_malicious = excluded.vt_malicious,
+            vt_suspicious = excluded.vt_suspicious,
+            vt_reputation = excluded.vt_reputation,
+            vt_total = excluded.vt_total,
             cached_at = excluded.cached_at
     """, (
         ip_data.get("ip"),
@@ -395,14 +548,19 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
         ip_data.get("usage_type", ""),
         ip_data.get("domain", ""),
         ip_data.get("last_reported", ""),
+        ip_data.get("vt_malicious", 0),
+        ip_data.get("vt_suspicious", 0),
+        ip_data.get("vt_reputation", 0),
+        ip_data.get("vt_total", 0),
         now_iso
     ))
 
-    # Backfill sessions for this IP with geolocation and reputation
+    # Backfill sessions for this IP with geolocation, AbuseIPDB and VirusTotal
     cur.execute("""
         UPDATE sessions
         SET country = ?, country_code = ?, city = ?, asn = ?, isp = ?,
-            abuse_score = ?, total_reports = ?, usage_type = ?
+            abuse_score = ?, total_reports = ?, usage_type = ?,
+            vt_malicious = ?, vt_suspicious = ?, vt_reputation = ?
         WHERE ip = ?
     """, (
         ip_data.get("country"),
@@ -413,6 +571,9 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
         ip_data.get("abuse_score", 0),
         ip_data.get("total_reports", 0),
         ip_data.get("usage_type", ""),
+        ip_data.get("vt_malicious", 0),
+        ip_data.get("vt_suspicious", 0),
+        ip_data.get("vt_reputation", 0),
         ip_data.get("ip")
     ))
 

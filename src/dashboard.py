@@ -6,6 +6,8 @@ sub-2-second live streaming, IST timestamps, and rich forensic telemetry.
 
 import json
 import os
+import sys
+from pathlib import Path
 import sqlite3
 import pandas as pd
 import plotly.express as px
@@ -13,6 +15,12 @@ import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+
+# Ensure project root is in sys.path
+_cur_dir = Path(__file__).resolve().parent
+_root_dir = _cur_dir.parent if _cur_dir.name in ("src", "pages") else _cur_dir
+if str(_root_dir) not in sys.path:
+    sys.path.insert(0, str(_root_dir))
 
 from src.db import build_time_filter
 
@@ -156,7 +164,9 @@ st.sidebar.markdown("""
 st.sidebar.markdown("---")
 st.sidebar.subheader("Threat Intelligence Status")
 api_present = bool(os.getenv("ABUSEIPDB_API_KEY"))
-st.sidebar.markdown(f"**AbuseIPDB Integration:** {'Active (Online)' if api_present else 'Missing Key'}")
+vt_present = bool(os.getenv("VIRUSTOTAL_API_KEY"))
+st.sidebar.markdown(f"**AbuseIPDB API:** {'Active (Online)' if api_present else 'Missing Key'}")
+st.sidebar.markdown(f"**VirusTotal API v3:** {'Active (Online)' if vt_present else 'Missing Key'}")
 st.sidebar.markdown("**Timezone:** Indian Standard Time (IST, UTC+5:30)")
 
 conn = get_connection()
@@ -500,7 +510,10 @@ st.caption("Inspect any individual probe or interactive attack session with full
 session_list = pd.read_sql_query(f"""
     SELECT s.session_id, s.ip, s.country, s.city, s.start_time, s.start_time_ist, 
            s.duration, s.abuse_score, s.total_reports, s.usage_type, s.asn, s.isp,
-           s.client_version, s.ciphers, s.terminal_size
+           s.client_version, s.ciphers, s.terminal_size,
+           COALESCE(s.vt_malicious, 0) as vt_malicious,
+           COALESCE(s.vt_suspicious, 0) as vt_suspicious,
+           COALESCE(s.vt_reputation, 0) as vt_reputation
     FROM sessions s 
     {combined_where}
     ORDER BY s.start_time DESC 
@@ -513,7 +526,9 @@ if not session_list.empty:
         country = row["country"] or "Unknown"
         t_ist = row["start_time_ist"] or row["start_time"]
         abuse = row["abuse_score"] or 0
-        return f"[{sid}] | IP: {row['ip']} ({country}) | {t_ist} | Abuse: {abuse}%"
+        vt_mal = row["vt_malicious"] or 0
+        vt_txt = f" | VT: {vt_mal} Malicious" if vt_mal > 0 else ""
+        return f"[{sid}] | IP: {row['ip']} ({country}) | {t_ist} | Abuse: {abuse}%{vt_txt}"
 
     selected_session = st.selectbox(
         "Select Attacker Session to Inspect:",
@@ -553,12 +568,20 @@ if not session_list.empty:
         with info3:
             abuse_val = s_meta['abuse_score'] or 0
             abuse_color = "#ef4444" if abuse_val > 50 else ("#f59e0b" if abuse_val > 20 else "#10b981")
+            vt_mal = int(s_meta['vt_malicious'] or 0)
+            vt_susp = int(s_meta['vt_suspicious'] or 0)
+            vt_color = "#ef4444" if vt_mal > 0 else "#10b981"
             st.markdown(f"""
             <div class="detail-card">
                 <div class="metric-title">Threat Reputation</div>
-                <div style="font-size: 20px; font-weight: 700; color: {abuse_color};">{abuse_val}% Abuse Score</div>
-                <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Total Reports: {s_meta['total_reports'] or 0:,}</div>
-                <div style="font-size: 11px; color: #64748b;">Duration: {s_meta['duration']:.2f} seconds</div>
+                <div style="font-size: 15px; font-weight: 700; color: {abuse_color};">AbuseIPDB: {abuse_val}% Abuse</div>
+                <div style="font-size: 12px; font-weight: 600; color: {vt_color}; margin-top: 2px;">
+                    VirusTotal: {vt_mal} Malicious / {vt_susp} Suspicious
+                </div>
+                <div style="font-size: 11px; margin-top: 4px;">
+                    <a href="https://www.virustotal.com/gui/ip-address/{s_meta['ip']}" target="_blank" style="color: #38bdf8; text-decoration: underline;">Inspect on VirusTotal &rarr;</a>
+                </div>
+                <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Reports: {s_meta['total_reports'] or 0:,} | Duration: {s_meta['duration']:.1f}s</div>
             </div>
             """, unsafe_allow_html=True)
 

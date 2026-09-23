@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PYTHONPATH="/app:${PYTHONPATH}"
+
 echo "[*] Initializing SQLite database schema..."
 python -c "import os; from src.db import init_db; init_db(os.getenv('DATABASE_PATH', 'data/honeypot.db'))"
 

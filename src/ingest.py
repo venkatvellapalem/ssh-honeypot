@@ -5,15 +5,25 @@ enriches threat intelligence, records full telemetry (ciphers, banners, commands
 and logs every raw event with summaries and IST timestamps.
 """
 
+import glob
 import json
 import logging
 import os
+import sys
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
+# Ensure project root is in sys.path
+_cur_dir = Path(__file__).resolve().parent
+_root_dir = _cur_dir.parent if _cur_dir.name in ("src", "pages") else _cur_dir
+if str(_root_dir) not in sys.path:
+    sys.path.insert(0, str(_root_dir))
+
 from src.db import (
     close_session,
+    get_db_connection,
     init_db,
     record_auth_attempt,
     record_command,
@@ -41,8 +51,18 @@ class LogIngestionDaemon:
         self.db_path = os.getenv("DATABASE_PATH", db_path)
         self.enricher = ThreatEnricher(db_path=self.db_path)
         init_db(self.db_path)
-        # In-memory map of session_id -> src_ip to enrich events lacking src_ip
+        # Pre-seed session -> IP mapping from database
         self.session_ip_map = {}
+        try:
+            conn = get_db_connection(self.db_path)
+            cur = conn.cursor()
+            rows = cur.execute("SELECT session_id, ip FROM sessions").fetchall()
+            for sid, ip in rows:
+                if sid and ip:
+                    self.session_ip_map[sid] = ip
+            conn.close()
+        except Exception:
+            pass
 
     def process_line(self, line: str) -> None:
         """Parses a single Cowrie JSON log line and updates storage/enrichment."""
@@ -156,6 +176,50 @@ class LogIngestionDaemon:
         # Record into raw_logs for comprehensive audit trail
         record_raw_log(self.db_path, session_id, timestamp, event_id, line.strip(), ip=src_ip, summary=summary)
 
+    def backfill_historical_logs(self) -> None:
+        """Parses all existing Cowrie JSON files on startup to ensure zero historical data is lost."""
+        log_dir = os.path.dirname(self.log_path)
+        pattern = os.path.join(log_dir, "cowrie.json*")
+        found_files = sorted(glob.glob(pattern))
+        if not found_files:
+            return
+
+        logger.info(f"Scanning {len(found_files)} log file(s) for historical backfill: {found_files}")
+
+        # Fetch existing keys from raw_logs to avoid duplicate ingestion
+        existing_keys = set()
+        try:
+            conn = get_db_connection(self.db_path)
+            cur = conn.cursor()
+            rows = cur.execute("SELECT session_id, timestamp, event_id FROM raw_logs").fetchall()
+            for r in rows:
+                existing_keys.add(f"{r[0]}_{r[1]}_{r[2]}")
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Error fetching existing raw_logs keys: {e}")
+
+        backfilled_count = 0
+        for fpath in found_files:
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        try:
+                            ev = json.loads(line_str)
+                            key = f"{ev.get('session')}_{ev.get('timestamp')}_{ev.get('eventid')}"
+                            if key not in existing_keys:
+                                self.process_line(line_str)
+                                existing_keys.add(key)
+                                backfilled_count += 1
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.error(f"Failed to read file {fpath}: {e}")
+
+        logger.info(f"Historical backfill complete. Processed {backfilled_count} new historical events.")
+
     def run(self) -> None:
         """Continuously tails the Cowrie JSON log."""
         logger.info(f"Starting ingestion daemon. Monitoring: {self.log_path}")
@@ -165,8 +229,11 @@ class LogIngestionDaemon:
             logger.info(f"Waiting for log file {self.log_path} to be created by Cowrie...")
             time.sleep(3)
 
+        # Run historical backfill across all cowrie.json* files first
+        self.backfill_historical_logs()
+
         with open(self.log_path, "r", encoding="utf-8") as f:
-            # Seek to end on startup
+            # Seek to end after backfill
             f.seek(0, os.SEEK_END)
             while True:
                 line = f.readline()
