@@ -1,12 +1,37 @@
 """
 Database layer for SSH Honeypot & Threat Intelligence System.
 Manages SQLite schemas, session tracking, threat caching, and SOC analytics.
+Includes full IST (Indian Standard Time, UTC+5:30) timestamping,
+enhanced telemetry logging (client versions, ciphers, terminal sizes, raw events),
+and Splunk-style time-window and entity drilldown filtering.
 """
 
 import os
 import sqlite3
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+# Indian Standard Time (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def to_ist_str(utc_val: Optional[str] = None) -> str:
+    """Converts a UTC ISO string (or current UTC) to 'YYYY-MM-DD HH:MM:SS IST'."""
+    try:
+        if not utc_val:
+            dt = datetime.now(timezone.utc)
+        elif isinstance(utc_val, (int, float)):
+            dt = datetime.fromtimestamp(utc_val, tz=timezone.utc)
+        else:
+            # Handle ISO string with or without Z
+            clean_str = str(utc_val).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+    except Exception:
+        # Fallback to current IST time
+        return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def get_db_connection(db_path: str = "data/honeypot.db") -> sqlite3.Connection:
@@ -22,13 +47,15 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
     conn = get_db_connection(db_path)
     cur = conn.cursor()
 
-    # 1. Sessions table
+    # 1. Sessions table (enriched with IST, client fingerprints, and usage info)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             ip TEXT NOT NULL,
             start_time TIMESTAMP,
+            start_time_ist TEXT,
             end_time TIMESTAMP,
+            end_time_ist TEXT,
             duration REAL DEFAULT 0,
             country TEXT,
             country_code TEXT,
@@ -36,6 +63,11 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             asn TEXT,
             isp TEXT,
             abuse_score INTEGER DEFAULT 0,
+            total_reports INTEGER DEFAULT 0,
+            usage_type TEXT,
+            client_version TEXT,
+            ciphers TEXT,
+            terminal_size TEXT,
             total_attempts INTEGER DEFAULT 0,
             total_commands INTEGER DEFAULT 0
         )
@@ -47,6 +79,7 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
+            timestamp_ist TEXT,
             ip TEXT NOT NULL,
             username TEXT,
             password TEXT,
@@ -61,6 +94,7 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
+            timestamp_ist TEXT,
             ip TEXT NOT NULL,
             command_text TEXT NOT NULL,
             mitre_id TEXT,
@@ -76,6 +110,7 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
+            timestamp_ist TEXT,
             ip TEXT NOT NULL,
             url TEXT NOT NULL,
             sha256 TEXT,
@@ -96,6 +131,9 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             longitude REAL,
             abuse_score INTEGER DEFAULT 0,
             total_reports INTEGER DEFAULT 0,
+            usage_type TEXT,
+            domain TEXT,
+            last_reported TEXT,
             cached_at TIMESTAMP NOT NULL
         )
     """)
@@ -106,58 +144,148 @@ def init_db(db_path: str = "data/honeypot.db") -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
+            timestamp_ist TEXT,
+            ip TEXT,
             event_id TEXT NOT NULL,
+            summary TEXT,
             raw_json TEXT NOT NULL
         )
     """)
 
-    # Indexes for fast querying in SOC dashboard
+    # Migration: Add any missing columns to existing database safely
+    existing_cols = {col[1] for col in cur.execute("PRAGMA table_info(sessions)").fetchall()}
+    for col_name, col_type in [
+        ("start_time_ist", "TEXT"),
+        ("end_time_ist", "TEXT"),
+        ("total_reports", "INTEGER DEFAULT 0"),
+        ("usage_type", "TEXT"),
+        ("client_version", "TEXT"),
+        ("ciphers", "TEXT"),
+        ("terminal_size", "TEXT")
+    ]:
+        if col_name not in existing_cols:
+            try:
+                cur.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+    auth_cols = {col[1] for col in cur.execute("PRAGMA table_info(auth_attempts)").fetchall()}
+    if "timestamp_ist" not in auth_cols:
+        try:
+            cur.execute("ALTER TABLE auth_attempts ADD COLUMN timestamp_ist TEXT")
+        except Exception:
+            pass
+
+    cmd_cols = {col[1] for col in cur.execute("PRAGMA table_info(commands)").fetchall()}
+    if "timestamp_ist" not in cmd_cols:
+        try:
+            cur.execute("ALTER TABLE commands ADD COLUMN timestamp_ist TEXT")
+        except Exception:
+            pass
+
+    raw_cols = {col[1] for col in cur.execute("PRAGMA table_info(raw_logs)").fetchall()}
+    for col_name, col_type in [("timestamp_ist", "TEXT"), ("ip", "TEXT"), ("summary", "TEXT")]:
+        if col_name not in raw_cols:
+            try:
+                cur.execute(f"ALTER TABLE raw_logs ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+    # High-performance indexes
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_ip ON sessions(ip);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_time ON sessions(start_time);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_ip ON auth_attempts(ip);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_session ON commands(session_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_user ON auth_attempts(username);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_session ON auth_attempts(session_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_session ON commands(session_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_mitre ON commands(mitre_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_session ON raw_logs(session_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_event ON raw_logs(event_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raw_logs_time ON raw_logs(timestamp);")
 
     conn.commit()
     conn.close()
 
 
 def upsert_session(db_path: str, session_id: str, ip: str, timestamp: str) -> None:
-    """Registers or updates a session connection."""
+    """Registers or updates a session connection with IST timestamp."""
+    conn = get_db_connection(db_path)
+    cur = conn.cursor()
+    ist_time = to_ist_str(timestamp)
+    cur.execute("""
+        INSERT INTO sessions (session_id, ip, start_time, start_time_ist)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            ip = excluded.ip,
+            start_time_ist = COALESCE(sessions.start_time_ist, excluded.start_time_ist)
+    """, (session_id, ip, timestamp, ist_time))
+    conn.commit()
+    conn.close()
+
+
+def update_session_client_version(db_path: str, session_id: str, version: str) -> None:
+    """Updates client SSH version banner (e.g. OpenSSH, Go, PuTTY)."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO sessions (session_id, ip, start_time)
-        VALUES (?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-            ip = excluded.ip
-    """, (session_id, ip, timestamp))
+        UPDATE sessions
+        SET client_version = ?
+        WHERE session_id = ?
+    """, (version, session_id))
+    conn.commit()
+    conn.close()
+
+
+def update_session_kex(db_path: str, session_id: str, ciphers: str) -> None:
+    """Updates negotiated SSH ciphers and key exchange suites."""
+    conn = get_db_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE sessions
+        SET ciphers = ?
+        WHERE session_id = ?
+    """, (ciphers, session_id))
+    conn.commit()
+    conn.close()
+
+
+def update_session_terminal(db_path: str, session_id: str, terminal_size: str) -> None:
+    """Updates terminal dimensions from client resize events."""
+    conn = get_db_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE sessions
+        SET terminal_size = ?
+        WHERE session_id = ?
+    """, (terminal_size, session_id))
     conn.commit()
     conn.close()
 
 
 def close_session(db_path: str, session_id: str, end_time: str, duration: float) -> None:
-    """Closes an active session with duration."""
+    """Closes an active session with duration and IST end time."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
+    ist_time = to_ist_str(end_time)
     cur.execute("""
         UPDATE sessions
-        SET end_time = ?, duration = ?
+        SET end_time = ?, end_time_ist = ?, duration = ?
         WHERE session_id = ?
-    """, (end_time, duration, session_id))
+    """, (end_time, ist_time, duration, session_id))
     conn.commit()
     conn.close()
 
 
 def record_auth_attempt(db_path: str, session_id: str, ip: str, timestamp: str,
                         username: str, password: str, status: str) -> None:
-    """Records authentication attempt and increments session counter."""
+    """Records authentication attempt with IST timestamp."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
+    ist_time = to_ist_str(timestamp)
     cur.execute("""
-        INSERT INTO auth_attempts (session_id, timestamp, ip, username, password, status)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (session_id, timestamp, ip, username, password, status))
+        INSERT INTO auth_attempts (session_id, timestamp, timestamp_ist, ip, username, password, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, ist_time, ip, username, password, status))
 
     cur.execute("""
         UPDATE sessions
@@ -171,13 +299,14 @@ def record_auth_attempt(db_path: str, session_id: str, ip: str, timestamp: str,
 def record_command(db_path: str, session_id: str, ip: str, timestamp: str,
                    command_text: str, mitre_id: Optional[str] = None,
                    mitre_technique: Optional[str] = None, mitre_tactic: Optional[str] = None) -> None:
-    """Records shell command and MITRE ATT&CK mapping."""
+    """Records shell command and MITRE ATT&CK mapping with IST timestamp."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
+    ist_time = to_ist_str(timestamp)
     cur.execute("""
-        INSERT INTO commands (session_id, timestamp, ip, command_text, mitre_id, mitre_technique, mitre_tactic)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (session_id, timestamp, ip, command_text, mitre_id, mitre_technique, mitre_tactic))
+        INSERT INTO commands (session_id, timestamp, timestamp_ist, ip, command_text, mitre_id, mitre_technique, mitre_tactic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, ist_time, ip, command_text, mitre_id, mitre_technique, mitre_tactic))
 
     cur.execute("""
         UPDATE sessions
@@ -190,46 +319,35 @@ def record_command(db_path: str, session_id: str, ip: str, timestamp: str,
 
 def record_download(db_path: str, session_id: str, ip: str, timestamp: str,
                     url: str, sha256: Optional[str] = None) -> None:
-    """Records payload/dropper download."""
+    """Records payload/dropper download with IST timestamp."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
+    ist_time = to_ist_str(timestamp)
     cur.execute("""
-        INSERT INTO downloads (session_id, timestamp, ip, url, sha256)
-        VALUES (?, ?, ?, ?, ?)
-    """, (session_id, timestamp, ip, url, sha256))
+        INSERT INTO downloads (session_id, timestamp, timestamp_ist, ip, url, sha256)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, ist_time, ip, url, sha256))
     conn.commit()
     conn.close()
 
 
-def record_raw_log(db_path: str, session_id: str, timestamp: str, event_id: str, raw_json: str) -> None:
+def record_raw_log(db_path: str, session_id: str, timestamp: str, event_id: str, raw_json: str,
+                   ip: Optional[str] = None, summary: Optional[str] = None) -> None:
     """Stores exact unparsed raw JSON telemetry for forensic investigation."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
+    ist_time = to_ist_str(timestamp)
     cur.execute("""
-        INSERT INTO raw_logs (session_id, timestamp, event_id, raw_json)
-        VALUES (?, ?, ?, ?)
-    """, (session_id, timestamp, event_id, raw_json))
+        INSERT INTO raw_logs (session_id, timestamp, timestamp_ist, ip, event_id, summary, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, ist_time, ip, event_id, summary, raw_json))
     conn.commit()
     conn.close()
-
-
-def get_raw_logs_for_session(db_path: str, session_id: str) -> List[Dict[str, Any]]:
-    """Retrieves all raw JSON lines for a specific session in chronological order."""
-    conn = get_db_connection(db_path)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT timestamp, event_id, raw_json
-        FROM raw_logs
-        WHERE session_id = ?
-        ORDER BY id ASC
-    """, (session_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
 
 
 def get_cached_ip(db_path: str, ip: str) -> Optional[Dict[str, Any]]:
     """Retrieves cached threat intelligence for an IP if exists."""
+    init_db(db_path)
     conn = get_db_connection(db_path)
     cur = conn.cursor()
     cur.execute("SELECT * FROM ip_cache WHERE ip = ?", (ip,))
@@ -244,10 +362,11 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
     """Saves threat intelligence enrichment to cache and updates sessions table."""
     conn = get_db_connection(db_path)
     cur = conn.cursor()
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     cur.execute("""
-        INSERT INTO ip_cache (ip, country, country_code, city, asn, isp, latitude, longitude, abuse_score, total_reports, cached_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO ip_cache (ip, country, country_code, city, asn, isp, latitude, longitude,
+                             abuse_score, total_reports, usage_type, domain, last_reported, cached_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ip) DO UPDATE SET
             country = excluded.country,
             country_code = excluded.country_code,
@@ -258,6 +377,9 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
             longitude = excluded.longitude,
             abuse_score = excluded.abuse_score,
             total_reports = excluded.total_reports,
+            usage_type = excluded.usage_type,
+            domain = excluded.domain,
+            last_reported = excluded.last_reported,
             cached_at = excluded.cached_at
     """, (
         ip_data.get("ip"),
@@ -270,13 +392,17 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
         ip_data.get("longitude"),
         ip_data.get("abuse_score", 0),
         ip_data.get("total_reports", 0),
+        ip_data.get("usage_type", ""),
+        ip_data.get("domain", ""),
+        ip_data.get("last_reported", ""),
         now_iso
     ))
 
-    # Also backfill active sessions for this IP with geolocation and reputation
+    # Backfill sessions for this IP with geolocation and reputation
     cur.execute("""
         UPDATE sessions
-        SET country = ?, country_code = ?, city = ?, asn = ?, isp = ?, abuse_score = ?
+        SET country = ?, country_code = ?, city = ?, asn = ?, isp = ?,
+            abuse_score = ?, total_reports = ?, usage_type = ?
         WHERE ip = ?
     """, (
         ip_data.get("country"),
@@ -285,6 +411,8 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
         ip_data.get("asn"),
         ip_data.get("isp"),
         ip_data.get("abuse_score", 0),
+        ip_data.get("total_reports", 0),
+        ip_data.get("usage_type", ""),
         ip_data.get("ip")
     ))
 
@@ -292,35 +420,23 @@ def set_cached_ip(db_path: str, ip_data: Dict[str, Any]) -> None:
     conn.close()
 
 
-def get_summary_stats(db_path: str) -> Dict[str, Any]:
-    """Computes high-level SOC dashboard metrics."""
-    conn = get_db_connection(db_path)
-    cur = conn.cursor()
+def build_time_filter(time_range: str, col_name: str = "timestamp") -> Tuple[str, List[Any]]:
+    """Builds SQL condition for Splunk-style time ranges."""
+    if not time_range or time_range == "All Time":
+        return "", []
 
-    cur.execute("SELECT COUNT(*) FROM sessions")
-    total_sessions = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(DISTINCT ip) FROM sessions")
-    unique_ips = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM auth_attempts")
-    total_logins = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM auth_attempts WHERE status = 'SUCCESS'")
-    successful_logins = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM commands")
-    total_commands = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(DISTINCT country) FROM sessions WHERE country IS NOT NULL")
-    unique_countries = cur.fetchone()[0]
-
-    conn.close()
-    return {
-        "total_sessions": total_sessions,
-        "unique_ips": unique_ips,
-        "total_logins": total_logins,
-        "successful_logins": successful_logins,
-        "total_commands": total_commands,
-        "unique_countries": unique_countries
+    now = datetime.now(timezone.utc)
+    delta_map = {
+        "Last 15 Minutes": timedelta(minutes=15),
+        "Last 1 Hour": timedelta(hours=1),
+        "Last 4 Hours": timedelta(hours=4),
+        "Last 24 Hours": timedelta(hours=24),
+        "Last 7 Days": timedelta(days=7),
     }
+
+    delta = delta_map.get(time_range)
+    if not delta:
+        return "", []
+
+    cutoff = (now - delta).isoformat()
+    return f"{col_name} >= ?", [cutoff]

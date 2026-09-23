@@ -80,7 +80,10 @@ class ThreatEnricher:
             "latitude": geo_data.get("lat", 0.0),
             "longitude": geo_data.get("lon", 0.0),
             "abuse_score": abuse_data.get("abuseConfidenceScore", 0),
-            "total_reports": abuse_data.get("totalReports", 0)
+            "total_reports": abuse_data.get("totalReports", 0),
+            "usage_type": abuse_data.get("usageType", "Data Center/Web Hosting/Transit"),
+            "domain": abuse_data.get("domain", ""),
+            "last_reported": abuse_data.get("lastReportedAt", "")
         }
 
         # 4. Save to persistent cache
