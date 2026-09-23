@@ -1,13 +1,9 @@
 """
-BCSSL Honeypot - Central Forensic Event Log Explorer (/logs).
-Full end-to-end audit log viewer with Splunk-style time filtering,
-honeypot-oriented event categorization, IST timestamps, free-text search,
-and raw JSON forensics without missing data.
+SSH Honeypot — Event Log Explorer
+Full forensic event viewer with time filtering, category search, and raw JSON inspection.
 """
 
-import json
-import os
-import sys
+import json, os, sys
 from pathlib import Path
 import sqlite3
 import pandas as pd
@@ -15,59 +11,56 @@ import streamlit as st
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-# Ensure project root is in sys.path
 _cur_dir = Path(__file__).resolve().parent
 _root_dir = _cur_dir.parent if _cur_dir.name in ("src", "pages") else _cur_dir
 if str(_root_dir) not in sys.path:
     sys.path.insert(0, str(_root_dir))
 
-from PIL import Image
 from src.db import get_honeypot_event_type, to_ist_str, init_db
 
 load_dotenv()
 DB_PATH = os.getenv("DATABASE_PATH", "data/honeypot.db")
 
-# Robust path resolution for BCSS logo
+# ── Page config ───────────────────────────────────────────────────────────────
 FAVICON_PATH = None
 for candidate in [
     os.path.join(str(_root_dir), "assets", "bcss_logo.png"),
-    "assets/bcss_logo.png",
-    "/app/assets/bcss_logo.png"
+    "assets/bcss_logo.png", "/app/assets/bcss_logo.png"
 ]:
     if os.path.exists(candidate):
         FAVICON_PATH = candidate
         break
 
-favicon_img = Image.open(FAVICON_PATH) if (FAVICON_PATH and os.path.exists(FAVICON_PATH)) else None
+try:
+    from PIL import Image
+    _fi = Image.open(FAVICON_PATH) if FAVICON_PATH and os.path.exists(FAVICON_PATH) else None
+except Exception:
+    _fi = None
 
-st.set_page_config(
-    page_title="BCSSL - Central Honeypot Event Log Explorer (/logs)",
-    page_icon=favicon_img or "BCSS",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Event Log · SOC", page_icon=_fi or ":scroll:", layout="wide", initial_sidebar_state="expanded")
 
-# Dark / Black theme without emojis
+# ── Theme (same as main dashboard) ────────────────────────────────────────────
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #060913;
-        color: #e2e8f0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-    .filter-card {
-        background-color: #0b1120;
-        border: 1px solid #1e293b;
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
-    }
-    .detail-card {
-        background-color: #0b1120;
-        border: 1px solid #1e293b;
-        border-radius: 6px;
-        padding: 12px;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+:root { --bg:#0a0a0f; --surface:#111118; --border:#1e1e2a; --text:#e4e4e7; --muted:#71717a; --accent:#06b6d4; }
+.stApp, .stApp header, [data-testid="stSidebar"] { background: var(--bg) !important; font-family: 'Inter', sans-serif !important; }
+.stMarkdown, .stMarkdown p, .stMarkdown span, [data-testid="stSidebar"] .stMarkdown { color: var(--text) !important; }
+[data-testid="stSidebar"] { border-right: 1px solid var(--border) !important; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1 { font-size: 1.1rem !important; font-weight: 700 !important; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 { font-size: 0.75rem !important; font-weight: 600 !important; text-transform: uppercase !important; letter-spacing: 0.08em !important; color: var(--muted) !important; margin-top: 1rem !important; }
+h2, .stMarkdown h2 { font-size: 1rem !important; font-weight: 700 !important; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+[data-testid="stMetric"] { background: var(--surface) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; padding: 1rem 1.2rem !important; }
+[data-testid="stMetric"] label { font-size: 0.7rem !important; font-weight: 600 !important; text-transform: uppercase !important; letter-spacing: 0.06em !important; color: var(--muted) !important; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 1.6rem !important; font-weight: 800 !important; font-family: 'JetBrains Mono', monospace !important; }
+.stTabs [data-baseweb="tab-list"] { gap: 0 !important; border-bottom: 1px solid var(--border) !important; }
+.stTabs [data-baseweb="tab"] { font-size: 0.8rem !important; font-weight: 500 !important; color: var(--muted) !important; }
+.stTabs [aria-selected="true"] { color: var(--accent) !important; border-bottom-color: var(--accent) !important; }
+[data-testid="stDataFrame"] { border: 1px solid var(--border) !important; border-radius: 8px !important; }
+[data-baseweb="select"] > div, [data-baseweb="input"] > div { background: var(--surface) !important; border-color: var(--border) !important; border-radius: 8px !important; }
+.stDownloadButton button { border-radius: 8px !important; font-weight: 600 !important; }
+hr { border-color: var(--border) !important; }
+details { border: 1px solid var(--border) !important; border-radius: 8px !important; background: var(--surface) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,196 +72,149 @@ def get_connection():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
-# Clean honeypot-oriented category mapping for filters
-HONEYPOT_CATEGORIES = {
-    "All Honeypot Events": None,
-    "Honeypot Breach (Auth Succeeded)": "cowrie.login.success",
-    "Brute-Force Auth Failed": "cowrie.login.failed",
-    "Shell Keystroke / Command Execution": "cowrie.command.input",
-    "Malware Dropper Download Attempt": "cowrie.session.file_download",
-    "Inbound Connection Probe": "cowrie.session.connect",
-    "SSH Client Banner Fingerprint": "cowrie.client.version",
-    "Cryptographic Handshake / KEX": "cowrie.client.kex",
-    "Terminal Window Sized": "cowrie.client.size",
-    "TCP Tunnel / Proxy Forward Request": "cowrie.direct-tcpip.request",
-    "TTY Keystroke Recording Saved": "cowrie.log.closed",
-    "Attacker Session Terminated": "cowrie.session.closed",
+# ── Event categories ──────────────────────────────────────────────────────────
+CATEGORIES = {
+    "All Events": None,
+    "Auth Success": "cowrie.login.success",
+    "Auth Failed": "cowrie.login.failed",
+    "Command Input": "cowrie.command.input",
+    "File Download": "cowrie.session.file_download",
+    "Connection": "cowrie.session.connect",
+    "SSH Banner": "cowrie.client.version",
+    "KEX Handshake": "cowrie.client.kex",
+    "Terminal Size": "cowrie.client.size",
+    "TCP Tunnel": "cowrie.direct-tcpip.request",
+    "TTY Recording": "cowrie.log.closed",
+    "Session Closed": "cowrie.session.closed",
 }
 
-# Sidebar controls
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 if FAVICON_PATH and os.path.exists(FAVICON_PATH):
-    st.sidebar.image(FAVICON_PATH, width=190)
-st.sidebar.title("Navigation")
-st.sidebar.caption("BCSSL Threat Intelligence & SOC")
-st.sidebar.markdown("""
-* **Main Dashboard**: Navigate via top menu
-* **Log Explorer**: `/logs` (Active)
-""")
+    st.sidebar.image(FAVICON_PATH, width=160)
+st.sidebar.title("SOC")
+st.sidebar.caption("Blue Cloud Softech Solutions")
 
-live_stream = st.sidebar.checkbox("Live Stream (Update every 1.5s)", value=False)
-st.sidebar.markdown("---")
-st.sidebar.subheader("Sensor Information")
-st.sidebar.markdown("""
-* **Trap Port**: `22` (Cowrie Sandbox)
-* **Timezone**: Indian Standard Time (IST)
-""")
+st.sidebar.markdown("### Filters")
+live = st.sidebar.toggle("Live Stream", value=False)
 
-st.title("Central Forensic Event Log Explorer (/logs)")
-st.caption("Complete chronological forensic event stream across all honeypot sensors with IST timestamps.")
+st.sidebar.markdown("### Sensor")
+st.sidebar.markdown("- Port 22 (Cowrie)\n- Timezone: IST")
 
+
+# ── Connection ────────────────────────────────────────────────────────────────
 conn = get_connection()
 if conn is None:
-    st.warning("Database not initialized yet.")
+    st.warning("Database not initialized.")
     st.stop()
 
-# --- SPLUNK-STYLE TIME RANGE & QUERY FILTERS ---
-st.markdown('<div class="filter-card">', unsafe_allow_html=True)
-col_time, col_event, col_ip, col_search = st.columns([1.5, 2.2, 1.5, 2.0])
 
-with col_time:
-    time_filter = st.selectbox(
-        "Time Range (Splunk Window)",
-        options=["Last 15 Minutes", "Last 1 Hour", "Last 4 Hours", "Last 24 Hours", "Last 7 Days", "All Time"],
-        index=5
-    )
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown("## Event Log Explorer")
+st.caption("Full forensic event stream with filtering and raw JSON inspection.")
+st.divider()
 
-with col_event:
-    selected_category = st.selectbox(
-        "Honeypot Event Type",
-        options=list(HONEYPOT_CATEGORIES.keys()),
-        index=0
-    )
 
-with col_ip:
-    filter_ip = st.text_input("Filter by Attacker IP", value="", placeholder="e.g. 120.48.7.181")
+# ── Filter bar ────────────────────────────────────────────────────────────────
+fc1, fc2, fc3, fc4 = st.columns([1, 1.5, 1, 1.5])
+with fc1:
+    time_f = st.selectbox("Time", ["Last 15 Minutes", "Last 1 Hour", "Last 4 Hours", "Last 24 Hours", "Last 7 Days", "All Time"], index=5, label_visibility="collapsed")
+with fc2:
+    cat_f = st.selectbox("Category", list(CATEGORIES.keys()), index=0, label_visibility="collapsed")
+with fc3:
+    ip_f = st.text_input("IP filter", placeholder="IP address", label_visibility="collapsed")
+with fc4:
+    search_f = st.text_input("Search", placeholder="Search commands or JSON…", label_visibility="collapsed")
 
-with col_search:
-    search_keyword = st.text_input("Search (Command / Raw JSON)", value="", placeholder="e.g. uname, wget, root")
-st.markdown('</div>', unsafe_allow_html=True)
 
-# Build SQL query with filters
-where_clauses = []
-params = []
-
-# Time filter
+# ── Build query ───────────────────────────────────────────────────────────────
+where, params = [], []
 now = datetime.now(timezone.utc)
-delta_map = {
-    "Last 15 Minutes": timedelta(minutes=15),
-    "Last 1 Hour": timedelta(hours=1),
-    "Last 4 Hours": timedelta(hours=4),
-    "Last 24 Hours": timedelta(hours=24),
-    "Last 7 Days": timedelta(days=7),
-}
-if time_filter != "All Time" and time_filter in delta_map:
-    cutoff = (now - delta_map[time_filter]).isoformat()
-    where_clauses.append("timestamp >= ?")
-    params.append(cutoff)
+deltas = {"Last 15 Minutes": 15, "Last 1 Hour": 60, "Last 4 Hours": 240, "Last 24 Hours": 1440, "Last 7 Days": 10080}
+if time_f in deltas:
+    where.append("timestamp >= ?")
+    params.append((now - timedelta(minutes=deltas[time_f])).isoformat())
 
-# Category filter
-target_event_id = HONEYPOT_CATEGORIES.get(selected_category)
-if target_event_id:
-    where_clauses.append("event_id = ?")
-    params.append(target_event_id)
+cat_id = CATEGORIES.get(cat_f)
+if cat_id:
+    where.append("event_id = ?")
+    params.append(cat_id)
+if ip_f.strip():
+    where.append("ip LIKE ?")
+    params.append(f"%{ip_f.strip()}%")
+if search_f.strip():
+    where.append("(raw_json LIKE ? OR summary LIKE ?)")
+    params += [f"%{search_f.strip()}%"] * 2
 
-if filter_ip.strip():
-    where_clauses.append("ip LIKE ?")
-    params.append(f"%{filter_ip.strip()}%")
+wsql = ("WHERE " + " AND ".join(where)) if where else ""
 
-if search_keyword.strip():
-    where_clauses.append("(raw_json LIKE ? OR summary LIKE ?)")
-    params.append(f"%{search_keyword.strip()}%")
-    params.append(f"%{search_keyword.strip()}%")
+df = pd.read_sql_query(f"""
+    SELECT id, COALESCE(timestamp_ist, timestamp) as ts,
+           COALESCE(event_category, event_id) as cat,
+           COALESCE(ip, '—') as ip, session_id as sid,
+           COALESCE(summary, event_id) as summary,
+           event_id, raw_json
+    FROM raw_logs {wsql} ORDER BY id DESC LIMIT 300
+""", conn, params=params)
 
-where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+if not df.empty:
+    df["cat"] = df["event_id"].apply(get_honeypot_event_type)
+    df["ts"] = df["ts"].apply(to_ist_str)
 
-query = f"""
-    SELECT id, 
-           COALESCE(timestamp_ist, timestamp) as "Timestamp (IST)", 
-           COALESCE(event_category, event_id) as "Honeypot Event Type", 
-           COALESCE(ip, 'Honeypot Internal') as "Attacker IP", 
-           session_id as "Session ID", 
-           COALESCE(summary, event_id) as "Forensic Summary",
-           event_id,
-           raw_json
-    FROM raw_logs
-    {where_sql}
-    ORDER BY id DESC
-    LIMIT 300
-"""
 
-logs_df = pd.read_sql_query(query, conn, params=params)
-
-# Post-process DataFrame to guarantee zero None values
-if not logs_df.empty:
-    logs_df["Honeypot Event Type"] = logs_df["event_id"].apply(get_honeypot_event_type)
-    # Ensure Timestamp (IST) is human-readable
-    logs_df["Timestamp (IST)"] = logs_df["Timestamp (IST)"].apply(to_ist_str)
-
-# Metrics bar
+# ── Metrics ───────────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Matching Forensic Events", f"{len(logs_df):,}")
-m2.metric("Unique Sessions", f"{logs_df['Session ID'].nunique() if not logs_df.empty else 0:,}")
-m3.metric("Unique Attacker IPs", f"{logs_df['Attacker IP'].nunique() if not logs_df.empty else 0:,}")
-m4.metric("Active Filter Rules", f"{len(where_clauses)}")
+m1.metric("Events", f"{len(df):,}")
+m2.metric("Sessions", f"{df['sid'].nunique() if not df.empty else 0:,}")
+m3.metric("Source IPs", f"{df['ip'].nunique() if not df.empty else 0:,}")
+m4.metric("Filters", f"{len(where)}")
 
-st.markdown("---")
+st.divider()
 
-if logs_df.empty:
-    st.info("No log events found matching the specified time range and filter criteria.")
+
+# ── Table ─────────────────────────────────────────────────────────────────────
+if df.empty:
+    st.info("No events match the current filters.")
 else:
-    # Display structured table
-    display_df = logs_df.drop(columns=["raw_json", "id", "event_id"])
-    st.dataframe(display_df, use_container_width=True, height=450)
-
-    # Detailed Forensic JSON Inspector
-    st.subheader("Raw Forensic JSON Inspector")
-    st.caption("Inspect exact unparsed JSON event payloads captured directly from honeypot network sockets.")
-    
-    selected_log_id = st.selectbox(
-        "Select Log Entry ID to Inspect Exact Raw Payload:",
-        options=logs_df["id"].tolist(),
-        format_func=lambda x: f"ID #{x} | {logs_df.loc[logs_df['id'] == x, 'Timestamp (IST)'].values[0]} | {logs_df.loc[logs_df['id'] == x, 'Honeypot Event Type'].values[0]} | IP: {logs_df.loc[logs_df['id'] == x, 'Attacker IP'].values[0]}"
+    st.dataframe(
+        df[["ts", "cat", "ip", "sid", "summary"]].rename(columns={
+            "ts": "Time", "cat": "Category", "ip": "IP", "sid": "Session", "summary": "Summary"
+        }),
+        use_container_width=True, hide_index=True, height=440,
     )
 
-    if selected_log_id:
-        row = logs_df[logs_df["id"] == selected_log_id].iloc[0]
-        c_left, c_right = st.columns([1.1, 2.0])
-        with c_left:
-            st.markdown(f"**Timestamp (IST):** `{row['Timestamp (IST)']}`")
-            st.markdown(f"**Honeypot Event:** `{row['Honeypot Event Type']}`")
-            st.markdown(f"**Attacker IP:** `{row['Attacker IP']}`")
-            st.markdown(f"**Session ID:** `{row['Session ID']}`")
-            st.markdown(f"**Forensic Summary:** {row['Forensic Summary']}")
-            st.markdown(f"**Internal Cowrie ID:** `{row['event_id']}`")
+    st.divider()
+    st.markdown("### Raw JSON Inspector")
 
-        with c_right:
-            st.markdown("**Complete Raw JSON Recorded on Disk:**")
+    _ids = df["id"].tolist()
+    _sel = st.selectbox("Entry", _ids, format_func=lambda x: f"#{x}  ·  {df.loc[df['id']==x, 'ts'].values[0]}  ·  {df.loc[df['id']==x, 'cat'].values[0]}  ·  {df.loc[df['id']==x, 'ip'].values[0]}", label_visibility="collapsed")
+    if _sel:
+        row = df[df["id"] == _sel].iloc[0]
+        ic1, ic2 = st.columns([1, 2])
+        with ic1:
+            st.markdown(f"**Time:** `{row['ts']}`")
+            st.markdown(f"**Category:** `{row['cat']}`")
+            st.markdown(f"**IP:** `{row['ip']}`")
+            st.markdown(f"**Session:** `{row['sid']}`")
+            st.markdown(f"**Summary:** {row['summary']}")
+        with ic2:
             try:
-                parsed_json = json.loads(row["raw_json"])
-                st.json(parsed_json)
+                st.json(json.loads(row["raw_json"]))
             except Exception:
                 st.code(row["raw_json"], language="json")
 
-    # Export Section
-    st.markdown("---")
-    exp_col1, exp_col2 = st.columns(2)
-    with exp_col1:
-        st.download_button(
-            label="Export Filtered Logs as CSV",
-            data=logs_df.drop(columns=["raw_json"]).to_csv(index=False).encode('utf-8'),
-            file_name="bcssl_honeypot_forensic_logs.csv",
-            mime="text/csv"
-        )
-    with exp_col2:
-        st.download_button(
-            label="Export Filtered Logs as JSON Lines",
-            data="\n".join(logs_df["raw_json"].tolist()).encode('utf-8'),
-            file_name="bcssl_honeypot_raw.jsonl",
-            mime="application/json"
-        )
+    st.divider()
+    st.markdown("### Export")
 
-# Live stream autorefresh (under 2 seconds)
-if live_stream:
+    ex1, ex2 = st.columns(2)
+    with ex1:
+        st.download_button("CSV", df.drop(columns=["raw_json"]).to_csv(index=False).encode(), "events.csv", use_container_width=True)
+    with ex2:
+        st.download_button("JSON Lines", "\n".join(df["raw_json"].tolist()).encode(), "events.jsonl", use_container_width=True)
+
+
+# ── Live refresh ──────────────────────────────────────────────────────────────
+if live:
     import time
     time.sleep(1.5)
     st.rerun()
