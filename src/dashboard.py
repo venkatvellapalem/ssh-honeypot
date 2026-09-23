@@ -22,15 +22,28 @@ _root_dir = _cur_dir.parent if _cur_dir.name in ("src", "pages") else _cur_dir
 if str(_root_dir) not in sys.path:
     sys.path.insert(0, str(_root_dir))
 
+from PIL import Image
 from src.db import build_time_filter
 
 load_dotenv()
 DB_PATH = os.getenv("DATABASE_PATH", "data/honeypot.db")
-FAVICON_PATH = "assets/bcss_logo.png" if os.path.exists("assets/bcss_logo.png") else None
+
+# Robust path resolution for BCSS logo
+FAVICON_PATH = None
+for candidate in [
+    os.path.join(str(_root_dir), "assets", "bcss_logo.png"),
+    "assets/bcss_logo.png",
+    "/app/assets/bcss_logo.png"
+]:
+    if os.path.exists(candidate):
+        FAVICON_PATH = candidate
+        break
+
+favicon_img = Image.open(FAVICON_PATH) if (FAVICON_PATH and os.path.exists(FAVICON_PATH)) else None
 
 st.set_page_config(
     page_title="BCSSL Threat Intelligence & SSH Honeypot SOC",
-    page_icon=FAVICON_PATH or "BCSS",
+    page_icon=favicon_img or "BCSS",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -148,6 +161,8 @@ if "drilldown_mitre" not in st.session_state:
     st.session_state["drilldown_mitre"] = None
 
 # Sidebar
+if FAVICON_PATH and os.path.exists(FAVICON_PATH):
+    st.sidebar.image(FAVICON_PATH, width=190)
 st.sidebar.title("BCSSL SOC Navigation")
 st.sidebar.caption("Blue Cloud Softech Solutions Ltd.")
 
